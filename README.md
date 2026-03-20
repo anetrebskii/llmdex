@@ -59,6 +59,19 @@ llmdex-index /path/to/project
 llmdex-index /path/to/project -e .md .ts .py .json
 ```
 
+**Manage indexed projects:**
+
+```bash
+# List all indexed projects
+llmdex-index list
+
+# Re-index all registered projects
+llmdex-index reindex
+
+# Remove a project from the registry
+llmdex-index remove /path/to/project
+```
+
 Indexes are stored centrally in `~/.llmdex/indexes/` — project directories stay clean.
 
 **What gets indexed by default:**
@@ -113,9 +126,12 @@ llmdex-server -t 3600
 
 # Stop the server
 llmdex-server --stop
+
+# Restart the server
+llmdex-server --restart
 ```
 
-The server shuts down automatically after 30 minutes of inactivity. You can stop it at any time with `llmdex-server --stop`.
+The server shuts down automatically after 30 minutes of inactivity. After a package update, the server automatically restarts on the next command when it detects a version mismatch.
 
 ## Server HTTP API
 
