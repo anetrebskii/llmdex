@@ -86,36 +86,26 @@ def cmd_remove(args):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="llmdex - index project files for semantic search")
-    sub = parser.add_subparsers(dest="command")
-
-    # Default: index (also works without subcommand for backwards compat)
-    parser.add_argument("directory", nargs="?", default=None, help="Project directory to index")
-    parser.add_argument("-e", "--extensions", nargs="+", default=[".md", ".ts", ".json"],
-                        help="File extensions to index (default: .md .ts .json)")
-
-    # llmdex-index reindex
-    p_reindex = sub.add_parser("reindex", help="Re-index all previously indexed folders")
-
-    # llmdex-index list
-    p_list = sub.add_parser("list", help="List all indexed folders")
-
-    # llmdex-index remove <directory>
-    p_remove = sub.add_parser("remove", help="Remove a folder from the index")
-    p_remove.add_argument("directory", help="Directory to remove")
-
-    args = parser.parse_args()
-
-    if args.command == "reindex":
-        cmd_reindex(args)
-    elif args.command == "list":
-        cmd_list(args)
-    elif args.command == "remove":
-        cmd_remove(args)
+    # Manual dispatch: check if first arg is a subcommand
+    commands = {"reindex", "list", "remove"}
+    if len(sys.argv) > 1 and sys.argv[1] in commands:
+        cmd = sys.argv[1]
+        if cmd == "reindex":
+            cmd_reindex(None)
+        elif cmd == "list":
+            cmd_list(None)
+        elif cmd == "remove":
+            if len(sys.argv) < 3:
+                print("Usage: llmdex-index remove <directory>")
+                sys.exit(1)
+            args = argparse.Namespace(directory=sys.argv[2])
+            cmd_remove(args)
     else:
-        # Default: index a directory
-        if args.directory is None:
-            args.directory = "."
+        parser = argparse.ArgumentParser(description="llmdex - index project files for semantic search")
+        parser.add_argument("directory", nargs="?", default=".", help="Project directory to index")
+        parser.add_argument("-e", "--extensions", nargs="+", default=[".md", ".ts", ".json"],
+                            help="File extensions to index (default: .md .ts .json)")
+        args = parser.parse_args()
         cmd_index(args)
 
 
