@@ -21,8 +21,24 @@ jobs:
           fetch-depth: 0
 
       - name: Auto version and tag
+        id: version
         uses: entech-code/auto-version-tagging-action@fd3ec6c9309a0168e8f23782a1792564f3a6680e
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           majorVersion: 0
           tagPrefix: "v"
+
+      - name: Update version in pyproject.toml
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          sed -i "s/^version = .*/version = \"${VERSION}\"/" pyproject.toml
+
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add pyproject.toml
+          git diff --cached --quiet || git commit -m "Bump version to ${VERSION}"
+          git push
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
