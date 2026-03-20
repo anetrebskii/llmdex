@@ -27,8 +27,7 @@ def pid_file() -> Path:
     return PID_DIR / "server.pid"
 
 
-def storage_dir(workspace: Path) -> Path:
-    return workspace / ".llm-index" / "storage"
+from llm_index.indexer import storage_dir
 
 
 class IndexCache:
@@ -96,6 +95,8 @@ class QueryHandler(BaseHTTPRequestHandler):
 
         if self.path == "/query":
             self._handle_query()
+        elif self.path == "/index":
+            self._handle_index()
         elif self.path == "/invalidate":
             self._handle_invalidate()
         elif self.path == "/health":
@@ -109,6 +110,45 @@ class QueryHandler(BaseHTTPRequestHandler):
             self._json_response(200, {"status": "ok"})
         else:
             self._json_response(404, {"error": "not found"})
+
+    def _handle_index(self):
+        body = self._read_body()
+        if not body:
+            return
+
+        directory = body.get("directory")
+        if not directory:
+            self._json_response(400, {"error": "missing 'directory'"})
+            return
+
+        workspace = Path(directory).resolve()
+        if not workspace.is_dir():
+            self._json_response(400, {"error": f"'{workspace}' is not a directory"})
+            return
+
+        extensions = body.get("extensions", [".md", ".ts", ".json"])
+        extensions = tuple(ext if ext.startswith(".") else f".{ext}" for ext in extensions)
+
+        # Import here to avoid circular import at module level
+        from llm_index.indexer import build_index
+
+        logs = []
+        try:
+            result = build_index(
+                workspace,
+                extensions=extensions,
+                embed_model=cache.get_embed_model(),
+                log=lambda msg: logs.append(msg),
+            )
+        except Exception as e:
+            self._json_response(500, {"error": str(e), "logs": logs})
+            return
+
+        # Invalidate cached index so next query loads the fresh one
+        cache.invalidate(workspace)
+
+        result["logs"] = logs
+        self._json_response(200, result)
 
     def _handle_query(self):
         body = self._read_body()
@@ -135,10 +175,6 @@ class QueryHandler(BaseHTTPRequestHandler):
         items = []
         for node in results:
             source = node.metadata.get("file_path", "unknown")
-            try:
-                source = str(Path(source).relative_to(workspace))
-            except ValueError:
-                pass
             items.append({
                 "score": round(node.score, 4),
                 "source": source,
