@@ -18,7 +18,7 @@ from llama_index.core import (
 )
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 
-INACTIVITY_TIMEOUT = 600  # 10 minutes
+INACTIVITY_TIMEOUT = 1800  # 30 minutes
 PID_DIR = Path.home() / ".llmdex"
 DEFAULT_PORT = 7392
 
