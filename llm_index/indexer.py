@@ -2,6 +2,7 @@
 """Core indexing logic, shared by CLI and server."""
 
 import os
+import sys
 import time
 from pathlib import Path
 
@@ -87,7 +88,11 @@ def storage_dir(workspace: Path) -> Path:
     return DATA_DIR / f"{key}-{name}"
 
 
-def parse_files(file_paths: list[str], embed_model, log=print) -> list:
+def _log(msg):
+    print(msg, flush=True)
+
+
+def parse_files(file_paths: list[str], embed_model, log=_log) -> list:
     """Parse files into nodes using appropriate parsers. Returns list of nodes."""
     # Group files by parser type
     groups: dict[str, list[str]] = {}
@@ -131,7 +136,7 @@ def parse_files(file_paths: list[str], embed_model, log=print) -> list:
 
 
 def build_index(workspace: Path, extensions: tuple[str, ...] | None = None,
-                embed_model=None, log=print) -> dict:
+                embed_model=None, log=_log) -> dict:
     """Build vector index for a workspace. Returns stats dict."""
     start = time.time()
 

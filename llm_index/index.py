@@ -5,6 +5,10 @@ import argparse
 import sys
 from pathlib import Path
 
+# Force unbuffered output so progress is visible in real time
+sys.stdout.reconfigure(line_buffering=True)
+sys.stderr.reconfigure(line_buffering=True)
+
 from llm_index.indexer import build_index
 
 
