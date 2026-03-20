@@ -21,7 +21,7 @@ from llm_index.server import (
 def _start_new_server() -> int:
     """Launch server subprocess and wait for it to come up. Returns port."""
     subprocess.Popen(
-        [sys.executable, "-m", "llm_index.server"],
+        [sys.executable, "-m", "llm_index.server", "--serve"],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         start_new_session=True,

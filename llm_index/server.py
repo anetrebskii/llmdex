@@ -480,7 +480,16 @@ def main():
     )
     parser.add_argument("--stop", action="store_true", help="Stop running server")
     parser.add_argument("--restart", action="store_true", help="Restart running server")
+    parser.add_argument(
+        "--serve",
+        action="store_true",
+        help=argparse.SUPPRESS,  # internal: run in foreground
+    )
     args = parser.parse_args()
+
+    if args.serve:
+        start_server(args.port, args.timeout)
+        return
 
     if args.stop:
         running = get_running_server()
@@ -513,7 +522,39 @@ def main():
                 print("Hint: run `llmdex-server --restart` to restart")
             return
 
-    start_server(args.port, args.timeout)
+    _launch_background(args.port, args.timeout)
+
+
+def _launch_background(port: int, timeout: int):
+    """Start server as a background process, wait for it, print status."""
+    import subprocess
+
+    subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "llm_index.server",
+            "--serve",
+            "-p",
+            str(port),
+            "-t",
+            str(timeout),
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+
+    for _ in range(60):
+        time.sleep(0.5)
+        running = get_running_server()
+        if running:
+            pid, rport, ver = running
+            print(f"Server v{ver} started (pid {pid}, port {rport})")
+            return
+
+    print("Failed to start server")
+    sys.exit(1)
 
 
 if __name__ == "__main__":
