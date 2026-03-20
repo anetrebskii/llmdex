@@ -54,6 +54,13 @@ def query_server(port: int, workspace: Path, question: str, top_k: int):
     try:
         with urllib.request.urlopen(req, timeout=120) as resp:
             data = json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        # Server returned an error status — read the JSON body for details
+        try:
+            data = json.loads(e.read())
+        except Exception:
+            print(f"Server error: {e}")
+            sys.exit(1)
     except urllib.error.URLError as e:
         print(f"Server error: {e}")
         sys.exit(1)
