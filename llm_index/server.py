@@ -8,7 +8,10 @@ import signal
 import sys
 import threading
 import time
+import urllib.request
+import urllib.error
 from http.server import HTTPServer, BaseHTTPRequestHandler
+from importlib.metadata import version as pkg_version, PackageNotFoundError
 from pathlib import Path
 
 from llama_index.core import (
@@ -23,6 +26,14 @@ from llm_index.indexer import storage_dir
 INACTIVITY_TIMEOUT = 1800  # 30 minutes
 PID_DIR = Path.home() / ".llmdex"
 DEFAULT_PORT = 7392
+
+
+def get_version() -> str:
+    """Return installed package version."""
+    try:
+        return pkg_version("llmdex")
+    except PackageNotFoundError:
+        return "dev"
 
 
 def pid_file() -> Path:
@@ -334,11 +345,19 @@ class QueryHandler(BaseHTTPRequestHandler):
 def start_server(port: int = DEFAULT_PORT, timeout: int = INACTIVITY_TIMEOUT):
     PID_DIR.mkdir(parents=True, exist_ok=True)
 
-    server = HTTPServer(("127.0.0.1", port), QueryHandler)
+    try:
+        server = HTTPServer(("127.0.0.1", port), QueryHandler)
+    except OSError as e:
+        if e.errno in (48, 98):  # 48=macOS, 98=Linux: Address already in use
+            print(f"Port {port} is occupied, attempting to free it...")
+            _force_free_port(port)
+            server = HTTPServer(("127.0.0.1", port), QueryHandler)
+        else:
+            raise
 
-    # Write PID file
+    # Write PID file with version
     pf = pid_file()
-    pf.write_text(f"{os.getpid()}\n{port}")
+    pf.write_text(f"{os.getpid()}\n{port}\n{get_version()}")
 
     def cleanup(*_):
         pf.unlink(missing_ok=True)
@@ -354,24 +373,91 @@ def start_server(port: int = DEFAULT_PORT, timeout: int = INACTIVITY_TIMEOUT):
     )
     watchdog.start()
 
-    print(f"llmdex server running on http://127.0.0.1:{port}")
+    ver = get_version()
+    print(f"llmdex server v{ver} running on http://127.0.0.1:{port}")
     print(f"Auto-shutdown after {timeout}s of inactivity")
     server.serve_forever()
 
 
-def get_running_server() -> tuple[int, int] | None:
-    """Returns (pid, port) if server is running, None otherwise."""
+def get_running_server() -> tuple[int, int, str] | None:
+    """Returns (pid, port, version) if server is running, None otherwise."""
     pf = pid_file()
     if not pf.exists():
         return None
     try:
         lines = pf.read_text().strip().split("\n")
         pid, port = int(lines[0]), int(lines[1])
+        ver = lines[2] if len(lines) > 2 else "unknown"
         os.kill(pid, 0)  # check if process exists
-        return pid, port
+        return pid, port, ver
     except (OSError, ValueError, IndexError):
         pf.unlink(missing_ok=True)
         return None
+
+
+def health_check(port: int, timeout: float = 3.0) -> bool:
+    """Check if server is actually responding on the given port."""
+    try:
+        req = urllib.request.Request(f"http://127.0.0.1:{port}/health")
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read())
+            return data.get("status") == "ok"
+    except Exception:
+        return False
+
+
+def stop_server(pid: int, port: int, wait: float = 5.0) -> bool:
+    """Stop server gracefully (SIGTERM), then forcefully (SIGKILL) if needed.
+    Returns True if server was stopped."""
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except OSError:
+        # Process already dead
+        pid_file().unlink(missing_ok=True)
+        return True
+
+    # Wait for graceful shutdown
+    deadline = time.time() + wait
+    while time.time() < deadline:
+        try:
+            os.kill(pid, 0)
+            time.sleep(0.2)
+        except OSError:
+            # Process is gone
+            pid_file().unlink(missing_ok=True)
+            return True
+
+    # Force kill
+    try:
+        os.kill(pid, signal.SIGKILL)
+        time.sleep(0.5)
+    except OSError:
+        pass
+
+    pid_file().unlink(missing_ok=True)
+    return True
+
+
+def _force_free_port(port: int):
+    """Find and kill whatever process is holding the port."""
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ["lsof", "-ti", f":{port}"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.stdout.strip():
+            for pid_str in result.stdout.strip().split("\n"):
+                pid = int(pid_str.strip())
+                if pid != os.getpid():
+                    print(f"Killing process {pid} occupying port {port}")
+                    os.kill(pid, signal.SIGKILL)
+            time.sleep(1)
+    except Exception:
+        pass
+
+    pid_file().unlink(missing_ok=True)
 
 
 def main():
@@ -391,23 +477,39 @@ def main():
         help="Inactivity timeout in seconds (default: 600)",
     )
     parser.add_argument("--stop", action="store_true", help="Stop running server")
+    parser.add_argument(
+        "--restart", action="store_true", help="Restart running server"
+    )
     args = parser.parse_args()
 
     if args.stop:
         running = get_running_server()
         if running:
-            pid, port = running
-            os.kill(pid, signal.SIGTERM)
-            print(f"Stopped server (pid {pid}, port {port})")
+            pid, port, ver = running
+            stop_server(pid, port)
+            print(f"Stopped server v{ver} (pid {pid}, port {port})")
         else:
             print("No server running")
         return
 
     running = get_running_server()
     if running:
-        pid, port = running
-        print(f"Server already running (pid {pid}, port {port})")
-        return
+        pid, port, ver = running
+
+        current_ver = get_version()
+        version_ok = ver == current_ver
+
+        if args.restart or not version_ok:
+            reason = "version mismatch" if not version_ok else "restart requested"
+            print(f"Restarting server ({reason}: running v{ver}, installed v{current_ver})...")
+            stop_server(pid, port)
+        else:
+            healthy = health_check(port)
+            status = "healthy" if healthy else "not responding"
+            print(f"Server already running v{ver} (pid {pid}, port {port}, {status})")
+            if not healthy:
+                print("Hint: run `llmdex-server --restart` to restart")
+            return
 
     start_server(args.port, args.timeout)
 

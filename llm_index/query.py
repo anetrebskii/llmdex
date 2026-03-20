@@ -10,16 +10,16 @@ import urllib.request
 import urllib.error
 from pathlib import Path
 
-from llm_index.server import get_running_server
+from llm_index.server import (
+    get_running_server,
+    get_version,
+    health_check,
+    stop_server,
+)
 
 
-def ensure_server() -> int:
-    """Start server if not running, return port."""
-    running = get_running_server()
-    if running:
-        return running[1]
-
-    # Start server in background
+def _start_new_server() -> int:
+    """Launch server subprocess and wait for it to come up. Returns port."""
     subprocess.Popen(
         [sys.executable, "-m", "llm_index.server"],
         stdout=subprocess.DEVNULL,
@@ -27,15 +27,41 @@ def ensure_server() -> int:
         start_new_session=True,
     )
 
-    # Wait for it to come up
     for _ in range(60):
         time.sleep(0.5)
         running = get_running_server()
         if running:
-            return running[1]
+            _, port, _ = running
+            return port
 
     print("Failed to start server")
     sys.exit(1)
+
+
+def ensure_server() -> int:
+    """Start server if not running, restart if stale or version mismatch. Returns port."""
+    running = get_running_server()
+
+    if running:
+        pid, port, ver = running
+        current_ver = get_version()
+
+        # Check version mismatch — restart if updated
+        if ver != current_ver:
+            print(f"Server version mismatch (running: {ver}, installed: {current_ver}), restarting...")
+            stop_server(pid, port)
+            return _start_new_server()
+
+        # Verify server is actually responding
+        if health_check(port):
+            return port
+
+        # PID exists but server not responding — kill and restart
+        print("Server not responding, restarting...")
+        stop_server(pid, port)
+        return _start_new_server()
+
+    return _start_new_server()
 
 
 def query_server(port: int, question: str, top_k: int, directory: str | None = None):
