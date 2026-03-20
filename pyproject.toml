@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "llm-index"
+version = "0.1.0"
+description = "Local semantic search for project files"
+requires-python = ">=3.10"
+dependencies = [
+    "llama-index-core",
+    "llama-index-readers-file",
+    "llama-index-embeddings-huggingface",
+    "tree-sitter-language-pack",
+]
+
+[tool.setuptools.packages.find]
+include = ["llm_index"]
+
+[project.scripts]
+llm-index = "llm_index.index:main"
+llm-query = "llm_index.query:main"
+llm-server = "llm_index.server:main"
