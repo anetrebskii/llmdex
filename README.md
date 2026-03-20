@@ -2,6 +2,8 @@
 
 Local semantic search for your projects. No API keys, no cloud — everything runs on your machine.
 
+**"How does auth work?"** — 20 seconds with llmdex, 2 minutes without. Real benchmark with Claude Code on a production codebase.
+
 Inspired by the original idea and Python scripts of [@lnetrebskii](https://github.com/lnetrebskii), this tool takes the concept further into a standalone, installable CLI.
 
 llmdex indexes your project files (Markdown, TypeScript, JSON) into a local vector database and lets you search by meaning, not just keywords.
@@ -219,3 +221,7 @@ pipx uninstall llmdex
 # Remove all data (indexes + server PID)
 rm -rf ~/.llmdex
 ```
+
+## License
+
+[MIT](LICENSE)
