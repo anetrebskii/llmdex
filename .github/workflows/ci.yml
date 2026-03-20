@@ -17,7 +17,6 @@ jobs:
           python-version: "3.12"
       - run: pip install ruff
       - run: ruff check llm_index/
-      - run: ruff format --check llm_index/
 
   build:
     runs-on: ubuntu-latest

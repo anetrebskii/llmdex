@@ -445,7 +445,9 @@ def _force_free_port(port: int):
     try:
         result = subprocess.run(
             ["lsof", "-ti", f":{port}"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
         if result.stdout.strip():
             for pid_str in result.stdout.strip().split("\n"):
@@ -477,9 +479,7 @@ def main():
         help="Inactivity timeout in seconds (default: 600)",
     )
     parser.add_argument("--stop", action="store_true", help="Stop running server")
-    parser.add_argument(
-        "--restart", action="store_true", help="Restart running server"
-    )
+    parser.add_argument("--restart", action="store_true", help="Restart running server")
     args = parser.parse_args()
 
     if args.stop:
@@ -501,7 +501,9 @@ def main():
 
         if args.restart or not version_ok:
             reason = "version mismatch" if not version_ok else "restart requested"
-            print(f"Restarting server ({reason}: running v{ver}, installed v{current_ver})...")
+            print(
+                f"Restarting server ({reason}: running v{ver}, installed v{current_ver})..."
+            )
             stop_server(pid, port)
         else:
             healthy = health_check(port)

@@ -48,7 +48,9 @@ def ensure_server() -> int:
 
         # Check version mismatch — restart if updated
         if ver != current_ver:
-            print(f"Server version mismatch (running: {ver}, installed: {current_ver}), restarting...")
+            print(
+                f"Server version mismatch (running: {ver}, installed: {current_ver}), restarting..."
+            )
             stop_server(pid, port)
             return _start_new_server()
 
