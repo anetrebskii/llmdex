@@ -2,6 +2,8 @@
 
 Local semantic search for your projects. No API keys, no cloud — everything runs on your machine.
 
+Inspired by the original idea and Python scripts of [@lnetrebskii](https://github.com/lnetrebskii), this tool takes the concept further into a standalone, installable CLI.
+
 llmdex indexes your project files (Markdown, TypeScript, JSON) into a local vector database and lets you search by meaning, not just keywords.
 
 ## Install
