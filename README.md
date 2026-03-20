@@ -1,5 +1,7 @@
 # llmdex
 
+[![CI](https://github.com/anetrebskii/llmdex/actions/workflows/ci.yml/badge.svg)](https://github.com/anetrebskii/llmdex/actions/workflows/ci.yml)
+
 Local semantic search for your projects. No API keys, no cloud — everything runs on your machine.
 
 > **"How does auth work?"**
