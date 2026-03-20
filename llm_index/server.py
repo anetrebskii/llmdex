@@ -18,6 +18,8 @@ from llama_index.core import (
 )
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 
+from llm_index.indexer import storage_dir
+
 INACTIVITY_TIMEOUT = 1800  # 30 minutes
 PID_DIR = Path.home() / ".llmdex"
 DEFAULT_PORT = 7392
@@ -25,9 +27,6 @@ DEFAULT_PORT = 7392
 
 def pid_file() -> Path:
     return PID_DIR / "server.pid"
-
-
-from llm_index.indexer import storage_dir
 
 
 class IndexCache:

@@ -2,7 +2,6 @@
 """Core indexing logic, shared by CLI and server."""
 
 import os
-import sys
 import time
 from pathlib import Path
 

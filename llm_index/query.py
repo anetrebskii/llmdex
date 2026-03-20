@@ -10,7 +10,7 @@ import urllib.request
 import urllib.error
 from pathlib import Path
 
-from llm_index.server import get_running_server, DEFAULT_PORT
+from llm_index.server import get_running_server
 
 
 def ensure_server() -> int:
