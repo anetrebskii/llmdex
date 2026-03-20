@@ -24,6 +24,9 @@ uv tool install git+https://github.com/anetrebskii/llmdex
 
 # or pipx
 pipx install git+https://github.com/anetrebskii/llmdex
+
+# pin a specific version
+uv tool install git+https://github.com/anetrebskii/llmdex@v0.1.0
 ```
 
 Requires Python 3.10+.
