@@ -19,7 +19,7 @@ from llama_index.core import (
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 
 INACTIVITY_TIMEOUT = 600  # 10 minutes
-PID_DIR = Path.home() / ".llm-index"
+PID_DIR = Path.home() / ".llmdex"
 DEFAULT_PORT = 7392
 
 
@@ -52,7 +52,7 @@ class IndexCache:
                 self.get_embed_model()
                 store = storage_dir(workspace)
                 if not store.exists():
-                    raise FileNotFoundError(f"No index at {store}. Run: llm-index {workspace}")
+                    raise FileNotFoundError(f"No index at {store}. Run: llmdex-index {workspace}")
                 ctx = StorageContext.from_defaults(persist_dir=str(store))
                 self.indexes[key] = load_index_from_storage(ctx)
             return self.indexes[key]
@@ -232,7 +232,7 @@ def start_server(port: int = DEFAULT_PORT, timeout: int = INACTIVITY_TIMEOUT):
     watchdog = threading.Thread(target=inactivity_watchdog, args=(timeout,), daemon=True)
     watchdog.start()
 
-    print(f"llm-query server running on http://127.0.0.1:{port}")
+    print(f"llmdex server running on http://127.0.0.1:{port}")
     print(f"Auto-shutdown after {timeout}s of inactivity")
     server.serve_forever()
 
@@ -253,7 +253,7 @@ def get_running_server() -> tuple[int, int] | None:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="llm-query persistent server")
+    parser = argparse.ArgumentParser(description="llmdex persistent server")
     parser.add_argument("-p", "--port", type=int, default=DEFAULT_PORT, help=f"Port (default: {DEFAULT_PORT})")
     parser.add_argument("-t", "--timeout", type=int, default=INACTIVITY_TIMEOUT, help="Inactivity timeout in seconds (default: 600)")
     parser.add_argument("--stop", action="store_true", help="Stop running server")

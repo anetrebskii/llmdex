@@ -3,7 +3,7 @@ requires = ["setuptools>=68.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "llm-index"
+name = "llmdex"
 version = "0.1.0"
 description = "Local semantic search for project files"
 requires-python = ">=3.10"
@@ -18,6 +18,6 @@ dependencies = [
 include = ["llm_index"]
 
 [project.scripts]
-llm-index = "llm_index.index:main"
-llm-query = "llm_index.query:main"
-llm-server = "llm_index.server:main"
+llmdex-index = "llm_index.index:main"
+llmdex-query = "llm_index.query:main"
+llmdex-server = "llm_index.server:main"

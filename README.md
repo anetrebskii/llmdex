@@ -21,29 +21,32 @@ Requires Python 3.10+.
 ```bash
 # 1. Index your project
 cd ~/my-project
-llm-index
+llmdex-index
 
 # 2. Search
-llm-query "how does authentication work"
+llmdex-query "how does authentication work"
 ```
 
 That's it. The first query takes ~25s (model loading), all subsequent queries are instant.
 
 ## Commands
 
-### `llm-index` — Build the index
+### `llmdex-index` — Build the index
 
 ```bash
 # Index current directory
-llm-index
+llmdex-index
 
 # Index a specific project
-llm-index /path/to/project
+llmdex-index /path/to/project
+
+# Index specific file types
+llmdex-index /path/to/project -e .md .ts .py .json
 ```
 
-Creates a `.llm-index/storage/` directory inside the project with the vector index.
+Indexes are stored centrally in `~/.llmdex/indexes/` — project directories stay clean.
 
-**What gets indexed:**
+**What gets indexed by default:**
 - `.md` files — parsed by headings and sections
 - `.ts` files — parsed by code structure (functions, classes)
 - `.json` files — parsed by text chunks
@@ -51,17 +54,17 @@ Creates a `.llm-index/storage/` directory inside the project with the vector ind
 **What gets skipped:**
 `node_modules`, `.git`, `dist`, `build`, `.next`, `.venv`, `__pycache__`, and other common build/cache directories.
 
-### `llm-query` — Search the index
+### `llmdex-query` — Search the index
 
 ```bash
 # Basic search
-llm-query "database connection setup"
+llmdex-query "database connection setup"
 
 # Search a specific project
-llm-query -d /path/to/project "error handling"
+llmdex-query -d /path/to/project "error handling"
 
 # Get more results (default: 5)
-llm-query -k 10 "API endpoints"
+llmdex-query -k 10 "API endpoints"
 ```
 
 **Output:**
@@ -70,40 +73,45 @@ llm-query -k 10 "API endpoints"
 Query: database connection setup
 Top 5 results:
 
-1. [0.742] src/db/connection.ts
+1. [0.742] /Users/you/my-project/src/db/connection.ts
    export async function connectDatabase(config: DbConfig) { const pool = new Pool({...
 
-2. [0.698] docs/setup.md
+2. [0.698] /Users/you/my-project/docs/setup.md
    ## Database Configuration  Set the following environment variables...
 ```
 
-Each result shows a relevance score (0-1), the source file, and a text preview.
+Each result shows a relevance score (0-1), the full file path, and a text preview.
 
-### `llm-server` — Manage the background server
+### `llmdex-server` — Manage the background server
 
-The query server starts automatically on first `llm-query` call. It keeps the embedding model in memory so subsequent queries are fast.
+The query server starts automatically on first `llmdex-query` call. It keeps the embedding model in memory so subsequent queries are fast.
 
 ```bash
 # Start manually
-llm-server
+llmdex-server
 
 # Custom port (default: 7392)
-llm-server -p 8080
+llmdex-server -p 8080
 
 # Custom inactivity timeout in seconds (default: 600 = 10 min)
-llm-server -t 1800
+llmdex-server -t 1800
 
 # Stop the server
-llm-server --stop
+llmdex-server --stop
 ```
 
 The server shuts down automatically after 10 minutes of inactivity.
 
 ## Server HTTP API
 
-The server exposes a local HTTP API on `127.0.0.1:7392`. You can query it directly with `curl`:
+The server exposes a local HTTP API on `127.0.0.1:7392`. You can use it directly with `curl`:
 
 ```bash
+# Index a project
+curl -s http://127.0.0.1:7392/index \
+  -H "Content-Type: application/json" \
+  -d '{"directory": "/path/to/project", "extensions": [".md", ".ts", ".py"]}'
+
 # Search
 curl -s http://127.0.0.1:7392/query \
   -H "Content-Type: application/json" \
@@ -120,7 +128,7 @@ curl http://127.0.0.1:7392/health
 
 ## How it works
 
-1. **Indexing** — Files are parsed into chunks using smart parsers (Markdown by headings, TypeScript by code structure, JSON by text boundaries). Each chunk is embedded into a vector using [all-MiniLM-L6-v2](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2), a small local model (~80MB). Vectors are stored in a local index.
+1. **Indexing** — Files are parsed into chunks using smart parsers (Markdown by headings, TypeScript by code structure, JSON by text boundaries). Each chunk is embedded into a vector using [all-MiniLM-L6-v2](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2), a small local model (~80MB). Vectors are stored in `~/.llmdex/indexes/`.
 
 2. **Querying** — Your search query is embedded with the same model, then compared against all stored vectors to find the most semantically similar chunks. This means "how does login work" will find code about authentication even if the word "login" doesn't appear.
 
@@ -131,15 +139,60 @@ curl http://127.0.0.1:7392/health
 ```bash
 # First time: index the project
 cd ~/my-project
-llm-index
+llmdex-index
 
 # Search anytime
-llm-query "payment processing"
-llm-query "how are emails sent"
-llm-query -k 10 "error handling in API routes"
+llmdex-query "payment processing"
+llmdex-query "how are emails sent"
+llmdex-query -k 10 "error handling in API routes"
 
 # After major code changes: re-index
-llm-index
+llmdex-index
+```
+
+## Claude Code integration
+
+Add llmdex as a semantic search tool for Claude Code by adding this to your project's `CLAUDE.md`:
+
+```markdown
+## Semantic Search
+
+This project is indexed with llmdex for semantic search.
+When you need to find code by concept (not just filename or keyword), use:
+
+\`\`\`bash
+llmdex-query -d /path/to/project "your question" -k 10
+\`\`\`
+
+Use this before grep/glob when:
+- Searching by concept ("how does auth work", "payment processing logic")
+- You don't know the exact file or function name
+- Exploring unfamiliar parts of the codebase
+
+To re-index after major changes:
+\`\`\`bash
+llmdex-index /path/to/project
+\`\`\`
+```
+
+You can also use the HTTP API via `curl` if the server is running:
+
+```markdown
+## Semantic Search (HTTP API)
+
+llmdex server runs on port 7392. Use it for semantic code search:
+
+\`\`\`bash
+# Search
+curl -s http://127.0.0.1:7392/query \
+  -H "Content-Type: application/json" \
+  -d '{"directory": "/path/to/project", "question": "your question", "top_k": 10}'
+
+# Index
+curl -s http://127.0.0.1:7392/index \
+  -H "Content-Type: application/json" \
+  -d '{"directory": "/path/to/project", "extensions": [".md", ".ts", ".json"]}'
+\`\`\`
 ```
 
 ## Updating
@@ -156,14 +209,11 @@ pipx install --force git+https://github.com/anetrebskii/llmdex
 
 ```bash
 # uv
-uv tool uninstall llm-index
+uv tool uninstall llmdex
 
 # pipx
-pipx uninstall llm-index
+pipx uninstall llmdex
 
-# Remove server data
-rm -rf ~/.llm-index
-
-# Remove project indexes (in each project)
-rm -rf .llm-index/storage
+# Remove all data (indexes + server PID)
+rm -rf ~/.llmdex
 ```

@@ -76,11 +76,11 @@ def collect_files(root: Path, extensions: tuple[str, ...]) -> list[str]:
     return files
 
 
-DATA_DIR = Path.home() / ".llm-index" / "indexes"
+DATA_DIR = Path.home() / ".llmdex" / "indexes"
 
 
 def storage_dir(workspace: Path) -> Path:
-    """Central storage: ~/.llm-index/indexes/<hash>-<name>/"""
+    """Central storage: ~/.llmdex/indexes/<hash>-<name>/"""
     import hashlib
     key = hashlib.sha256(str(workspace).encode()).hexdigest()[:12]
     name = workspace.name
