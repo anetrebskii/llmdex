@@ -37,7 +37,7 @@ def cmd_reindex(args):
 
     entries = list_registered()
     if not entries:
-        print("No indexed folders found. Run: llmdex-index <directory>")
+        print("No indexed folders found. Run: llmdex index <directory>")
         return
 
     print(f"Re-indexing {len(entries)} folder(s)...\n")

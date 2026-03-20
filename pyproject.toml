@@ -18,6 +18,7 @@ dependencies = [
 include = ["llm_index"]
 
 [project.scripts]
+llmdex = "llm_index.cli:main"
 llmdex-index = "llm_index.index:main"
 llmdex-query = "llm_index.query:main"
 llmdex-server = "llm_index.server:main"

@@ -9,7 +9,6 @@ import sys
 import threading
 import time
 import urllib.request
-import urllib.error
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from importlib.metadata import version as pkg_version, PackageNotFoundError
 from pathlib import Path
@@ -63,7 +62,7 @@ class IndexCache:
                 store = storage_dir(workspace)
                 if not store.exists():
                     raise FileNotFoundError(
-                        f"No index at {store}. Run: llmdex-index {workspace}"
+                        f"No index at {store}. Run: llmdex index {workspace}"
                     )
                 ctx = StorageContext.from_defaults(persist_dir=str(store))
                 self.indexes[key] = load_index_from_storage(ctx)
@@ -213,7 +212,7 @@ class QueryHandler(BaseHTTPRequestHandler):
             entries = list_registered()
             if not entries:
                 self._json_response(
-                    404, {"error": "No indexed folders. Run: llmdex-index <directory>"}
+                    404, {"error": "No indexed folders. Run: llmdex index <directory>"}
                 )
                 return
 
@@ -235,7 +234,7 @@ class QueryHandler(BaseHTTPRequestHandler):
                     self._json_response(
                         404,
                         {
-                            "error": f"No index at {store}. Run: llmdex-index {workspace}"
+                            "error": f"No index at {store}. Run: llmdex index {workspace}"
                         },
                     )
                     return
@@ -519,7 +518,7 @@ def main():
             status = "healthy" if healthy else "not responding"
             print(f"Server already running v{ver} (pid {pid}, port {port}, {status})")
             if not healthy:
-                print("Hint: run `llmdex-server --restart` to restart")
+                print("Hint: run `llmdex server --restart` to restart")
             return
 
     _launch_background(args.port, args.timeout)

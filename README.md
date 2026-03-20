@@ -36,40 +36,45 @@ Requires Python 3.10+.
 ```bash
 # 1. Index your project
 cd ~/my-project
-llmdex-index
+llmdex index
 
 # 2. Search
-llmdex-query "how does authentication work"
+llmdex query "how does authentication work"
 ```
 
 That's it. The first query takes ~25s (model loading), all subsequent queries are instant.
 
 ## Commands
 
-### `llmdex-index` — Build the index
+### `llmdex index` — Build the index
 
 ```bash
 # Index current directory
-llmdex-index
+llmdex index
 
 # Index a specific project
-llmdex-index /path/to/project
+llmdex index /path/to/project
 
 # Index specific file types
-llmdex-index /path/to/project -e .md .ts .py .json
+llmdex index /path/to/project -e .md .ts .py .json
 ```
 
-**Manage indexed projects:**
+### `llmdex reindex` — Re-index all registered projects
 
 ```bash
-# List all indexed projects
-llmdex-index list
+llmdex reindex
+```
 
-# Re-index all registered projects
-llmdex-index reindex
+### `llmdex list` — List all indexed projects
 
-# Remove a project from the registry
-llmdex-index remove /path/to/project
+```bash
+llmdex list
+```
+
+### `llmdex remove` — Remove a project from the registry
+
+```bash
+llmdex remove /path/to/project
 ```
 
 Indexes are stored centrally in `~/.llmdex/indexes/` — project directories stay clean.
@@ -82,17 +87,20 @@ Indexes are stored centrally in `~/.llmdex/indexes/` — project directories sta
 **What gets skipped:**
 `node_modules`, `.git`, `dist`, `build`, `.next`, `.venv`, `__pycache__`, and other common build/cache directories.
 
-### `llmdex-query` — Search the index
+### `llmdex query` — Search the index
 
 ```bash
 # Basic search
-llmdex-query "database connection setup"
+llmdex query "database connection setup"
 
 # Search a specific project
-llmdex-query -d /path/to/project "error handling"
+llmdex query -d /path/to/project "error handling"
+
+# Search across all indexed projects
+llmdex query -a "API endpoints"
 
 # Get more results (default: 5)
-llmdex-query -k 10 "API endpoints"
+llmdex query -k 10 "API endpoints"
 ```
 
 **Output:**
@@ -110,25 +118,25 @@ Top 5 results:
 
 Each result shows a relevance score (0-1), the full file path, and a text preview.
 
-### `llmdex-server` — Manage the background server
+### `llmdex server` — Manage the background server
 
-The query server starts automatically on first `llmdex-query` call. It keeps the embedding model in memory so subsequent queries are fast.
+The query server starts automatically on first `llmdex query` call. It keeps the embedding model in memory so subsequent queries are fast.
 
 ```bash
 # Start manually
-llmdex-server
+llmdex server
 
 # Custom port (default: 7392)
-llmdex-server -p 8080
+llmdex server -p 8080
 
 # Custom inactivity timeout in seconds (default: 1800 = 30 min)
-llmdex-server -t 3600
+llmdex server -t 3600
 
 # Stop the server
-llmdex-server --stop
+llmdex server --stop
 
 # Restart the server
-llmdex-server --restart
+llmdex server --restart
 ```
 
 The server shuts down automatically after 30 minutes of inactivity. After a package update, the server automatically restarts on the next command when it detects a version mismatch.
@@ -163,22 +171,22 @@ curl http://127.0.0.1:7392/health
 
 2. **Querying** — Your search query is embedded with the same model, then compared against all stored vectors to find the most semantically similar chunks. This means "how does login work" will find code about authentication even if the word "login" doesn't appear.
 
-3. **Server** — A lightweight HTTP server keeps the embedding model and indexes in memory between queries. It auto-starts on first query and auto-stops after 30 minutes of inactivity. You can also stop it manually with `llmdex-server --stop`.
+3. **Server** — A lightweight HTTP server keeps the embedding model and indexes in memory between queries. It auto-starts on first query and auto-stops after 30 minutes of inactivity. You can also stop it manually with `llmdex server --stop`.
 
 ## Typical workflow
 
 ```bash
 # First time: index the project
 cd ~/my-project
-llmdex-index
+llmdex index
 
 # Search anytime
-llmdex-query "payment processing"
-llmdex-query "how are emails sent"
-llmdex-query -k 10 "error handling in API routes"
+llmdex query "payment processing"
+llmdex query "how are emails sent"
+llmdex query -k 10 "error handling in API routes"
 
 # After major code changes: re-index
-llmdex-index
+llmdex index
 ```
 
 ## Claude Code integration
@@ -192,7 +200,7 @@ This project is indexed with llmdex for semantic search.
 When you need to find code by concept (not just filename or keyword), use:
 
 \`\`\`bash
-llmdex-query -d /path/to/project "your question" -k 10
+llmdex query -d /path/to/project "your question" -k 10
 \`\`\`
 
 Use this before grep/glob when:
@@ -202,7 +210,7 @@ Use this before grep/glob when:
 
 To re-index after major changes:
 \`\`\`bash
-llmdex-index /path/to/project
+llmdex index /path/to/project
 \`\`\`
 ```
 
