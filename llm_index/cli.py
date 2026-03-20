@@ -147,10 +147,18 @@ def cmd_server(args):
 
 
 def main():
+    from importlib.metadata import version as pkg_version, PackageNotFoundError
+
+    try:
+        ver = pkg_version("llmdex")
+    except PackageNotFoundError:
+        ver = "dev"
+
     parser = argparse.ArgumentParser(
         prog="llmdex",
         description="Local semantic search for your projects",
     )
+    parser.add_argument("-v", "--version", action="version", version=f"llmdex {ver}")
     sub = parser.add_subparsers(dest="command")
 
     # llmdex index / i
