@@ -105,14 +105,14 @@ llmdex-server
 # Custom port (default: 7392)
 llmdex-server -p 8080
 
-# Custom inactivity timeout in seconds (default: 600 = 10 min)
-llmdex-server -t 1800
+# Custom inactivity timeout in seconds (default: 1800 = 30 min)
+llmdex-server -t 3600
 
 # Stop the server
 llmdex-server --stop
 ```
 
-The server shuts down automatically after 10 minutes of inactivity.
+The server shuts down automatically after 30 minutes of inactivity. You can stop it at any time with `llmdex-server --stop`.
 
 ## Server HTTP API
 
@@ -144,7 +144,7 @@ curl http://127.0.0.1:7392/health
 
 2. **Querying** — Your search query is embedded with the same model, then compared against all stored vectors to find the most semantically similar chunks. This means "how does login work" will find code about authentication even if the word "login" doesn't appear.
 
-3. **Server** — A lightweight HTTP server keeps the embedding model and indexes in memory between queries. It auto-starts on first query and auto-stops after 10 minutes of inactivity.
+3. **Server** — A lightweight HTTP server keeps the embedding model and indexes in memory between queries. It auto-starts on first query and auto-stops after 30 minutes of inactivity. You can also stop it manually with `llmdex-server --stop`.
 
 ## Typical workflow
 
