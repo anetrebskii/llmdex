@@ -97,8 +97,12 @@ class QueryHandler(BaseHTTPRequestHandler):
             self._handle_query()
         elif self.path == "/index":
             self._handle_index()
+        elif self.path == "/reindex":
+            self._handle_reindex()
         elif self.path == "/invalidate":
             self._handle_invalidate()
+        elif self.path == "/remove":
+            self._handle_remove()
         elif self.path == "/health":
             self._json_response(200, {"status": "ok"})
         else:
@@ -108,6 +112,8 @@ class QueryHandler(BaseHTTPRequestHandler):
         touch_activity()
         if self.path == "/health":
             self._json_response(200, {"status": "ok"})
+        elif self.path == "/list":
+            self._handle_list()
         else:
             self._json_response(404, {"error": "not found"})
 
@@ -150,24 +156,12 @@ class QueryHandler(BaseHTTPRequestHandler):
         result["logs"] = logs
         self._json_response(200, result)
 
-    def _handle_query(self):
-        body = self._read_body()
-        if not body:
-            return
-
-        workspace = Path(body.get("directory", ".")).resolve()
-        question = body.get("question", "")
-        top_k = body.get("top_k", 5)
-
-        if not question:
-            self._json_response(400, {"error": "missing 'question'"})
-            return
-
+    def _query_single(self, workspace: Path, question: str, top_k: int) -> list[dict]:
+        """Query a single workspace index, return list of result dicts."""
         try:
             index = cache.get_index(workspace)
-        except FileNotFoundError as e:
-            self._json_response(404, {"error": str(e)})
-            return
+        except FileNotFoundError:
+            return []
 
         retriever = index.as_retriever(similarity_top_k=top_k)
         results = retriever.retrieve(question)
@@ -180,8 +174,47 @@ class QueryHandler(BaseHTTPRequestHandler):
                 "source": source,
                 "text": node.text[:500],
             })
+        return items
 
-        self._json_response(200, {"results": items})
+    def _handle_query(self):
+        body = self._read_body()
+        if not body:
+            return
+
+        directory = body.get("directory")
+        question = body.get("question", "")
+        top_k = body.get("top_k", 5)
+        search_all = body.get("all", directory is None)
+
+        if not question:
+            self._json_response(400, {"error": "missing 'question'"})
+            return
+
+        if search_all:
+            # Search across all registered indexes
+            from llm_index.registry import list_registered
+            entries = list_registered()
+            if not entries:
+                self._json_response(404, {"error": "No indexed folders. Run: llmdex-index <directory>"})
+                return
+
+            all_items = []
+            for dir_path in entries:
+                all_items.extend(self._query_single(Path(dir_path), question, top_k))
+
+            # Sort by score descending, take top_k
+            all_items.sort(key=lambda x: x["score"], reverse=True)
+            self._json_response(200, {"results": all_items[:top_k]})
+        else:
+            workspace = Path(directory).resolve()
+            items = self._query_single(workspace, question, top_k)
+            if not items:
+                from llm_index.indexer import storage_dir
+                store = storage_dir(workspace)
+                if not store.exists():
+                    self._json_response(404, {"error": f"No index at {store}. Run: llmdex-index {workspace}"})
+                    return
+            self._json_response(200, {"results": items})
 
     def _handle_invalidate(self):
         body = self._read_body()
@@ -190,6 +223,76 @@ class QueryHandler(BaseHTTPRequestHandler):
         workspace = Path(body.get("directory", ".")).resolve()
         cache.invalidate(workspace)
         self._json_response(200, {"status": "invalidated", "directory": str(workspace)})
+
+    def _handle_reindex(self):
+        from llm_index.registry import list_registered
+        from llm_index.indexer import build_index
+
+        entries = list_registered()
+        if not entries:
+            self._json_response(200, {"status": "nothing to reindex", "results": []})
+            return
+
+        results = []
+        for directory, meta in entries.items():
+            workspace = Path(directory)
+            if not workspace.is_dir():
+                results.append({"directory": directory, "error": "directory not found"})
+                continue
+
+            extensions = tuple(meta.get("extensions", [".md", ".ts", ".json"]))
+            logs = []
+            try:
+                result = build_index(
+                    workspace,
+                    extensions=extensions,
+                    embed_model=cache.get_embed_model(),
+                    log=lambda msg: logs.append(msg),
+                )
+            except Exception as e:
+                results.append({"directory": directory, "error": str(e), "logs": logs})
+                continue
+
+            cache.invalidate(workspace)
+            result["logs"] = logs
+            results.append(result)
+
+        self._json_response(200, {"status": "done", "results": results})
+
+    def _handle_list(self):
+        from llm_index.registry import list_registered
+        from llm_index.indexer import storage_dir
+
+        entries = list_registered()
+        items = []
+        for directory, meta in entries.items():
+            store = storage_dir(Path(directory))
+            items.append({
+                "directory": directory,
+                "extensions": meta.get("extensions", []),
+                "indexed_at": meta.get("indexed_at", "unknown"),
+                "has_index": store.exists(),
+            })
+        self._json_response(200, {"folders": items})
+
+    def _handle_remove(self):
+        body = self._read_body()
+        if not body:
+            return
+
+        directory = body.get("directory")
+        if not directory:
+            self._json_response(400, {"error": "missing 'directory'"})
+            return
+
+        directory = str(Path(directory).resolve())
+
+        from llm_index.registry import unregister
+        cache.invalidate(Path(directory))
+        if unregister(directory):
+            self._json_response(200, {"status": "removed", "directory": directory})
+        else:
+            self._json_response(404, {"error": f"not found in registry: {directory}"})
 
     def _read_body(self):
         length = int(self.headers.get("Content-Length", 0))

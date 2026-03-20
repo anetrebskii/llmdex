@@ -38,16 +38,15 @@ def ensure_server() -> int:
     sys.exit(1)
 
 
-def query_server(port: int, workspace: Path, question: str, top_k: int):
-    payload = json.dumps({
-        "directory": str(workspace),
-        "question": question,
-        "top_k": top_k,
-    }).encode()
+def query_server(port: int, question: str, top_k: int, directory: str | None = None):
+    payload = {"question": question, "top_k": top_k}
+    if directory is not None:
+        payload["directory"] = str(Path(directory).resolve())
+    # else: server searches all registered indexes
 
     req = urllib.request.Request(
         f"http://127.0.0.1:{port}/query",
-        data=payload,
+        data=json.dumps(payload).encode(),
         headers={"Content-Type": "application/json"},
     )
 
@@ -55,7 +54,6 @@ def query_server(port: int, workspace: Path, question: str, top_k: int):
         with urllib.request.urlopen(req, timeout=120) as resp:
             data = json.loads(resp.read())
     except urllib.error.HTTPError as e:
-        # Server returned an error status — read the JSON body for details
         try:
             data = json.loads(e.read())
         except Exception:
@@ -83,13 +81,14 @@ def query_server(port: int, workspace: Path, question: str, top_k: int):
 def main():
     parser = argparse.ArgumentParser(description="Search indexed project files")
     parser.add_argument("question", help="Search query")
-    parser.add_argument("-d", "--directory", default=".", help="Project directory (default: current dir)")
+    parser.add_argument("-d", "--directory", default=".", help="Project directory to search (default: current dir)")
+    parser.add_argument("-a", "--all", action="store_true", help="Search across all indexed projects")
     parser.add_argument("-k", "--top-k", type=int, default=5, help="Number of results (default: 5)")
     args = parser.parse_args()
 
-    workspace = Path(args.directory).resolve()
     port = ensure_server()
-    query_server(port, workspace, args.question, args.top_k)
+    directory = None if args.all else args.directory
+    query_server(port, args.question, args.top_k, directory)
 
 
 if __name__ == "__main__":

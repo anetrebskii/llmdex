@@ -172,6 +172,10 @@ def build_index(workspace: Path, extensions: tuple[str, ...] | None = None,
     elapsed = time.time() - start
     log(f"\nDone! Indexed {len(all_files)} files ({len(all_nodes)} nodes) in {elapsed:.1f}s")
 
+    # Register this folder
+    from llm_index.registry import register
+    register(str(workspace), list(extensions))
+
     return {
         "files": len(all_files),
         "nodes": len(all_nodes),
