@@ -1,16 +1,16 @@
 name: Release
 
 on:
-  push:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
     branches: [main]
-    paths-ignore:
-      - "docs/**"
-      - "*.md"
   workflow_dispatch:
 
 jobs:
   version:
     runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
 
     permissions:
       contents: write
@@ -21,8 +21,24 @@ jobs:
           fetch-depth: 0
 
       - name: Auto version and tag
+        id: version
         uses: entech-code/auto-version-tagging-action@fd3ec6c9309a0168e8f23782a1792564f3a6680e
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           majorVersion: 0
           tagPrefix: "v"
+
+      - name: Update version in README
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          sed -i "s|git+https://github.com/anetrebskii/llmdex[^[:space:]]*|git+https://github.com/anetrebskii/llmdex@${TAG}|g" README.md
+
+      - name: Commit README
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add README.md
+          git diff --cached --quiet || git commit -m "Update install commands to ${TAG}"
+          git push
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
