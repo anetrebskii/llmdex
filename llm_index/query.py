@@ -81,9 +81,18 @@ def query_server(port: int, question: str, top_k: int, directory: str | None = N
 def main():
     parser = argparse.ArgumentParser(description="Search indexed project files")
     parser.add_argument("question", help="Search query")
-    parser.add_argument("-d", "--directory", default=".", help="Project directory to search (default: current dir)")
-    parser.add_argument("-a", "--all", action="store_true", help="Search across all indexed projects")
-    parser.add_argument("-k", "--top-k", type=int, default=5, help="Number of results (default: 5)")
+    parser.add_argument(
+        "-d",
+        "--directory",
+        default=".",
+        help="Project directory to search (default: current dir)",
+    )
+    parser.add_argument(
+        "-a", "--all", action="store_true", help="Search across all indexed projects"
+    )
+    parser.add_argument(
+        "-k", "--top-k", type=int, default=5, help="Number of results (default: 5)"
+    )
     args = parser.parse_args()
 
     port = ensure_server()

@@ -10,7 +10,11 @@ from llama_index.core import (
     VectorStoreIndex,
     Settings,
 )
-from llama_index.core.node_parser import MarkdownNodeParser, CodeSplitter, SentenceSplitter
+from llama_index.core.node_parser import (
+    MarkdownNodeParser,
+    CodeSplitter,
+    SentenceSplitter,
+)
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 
 SKIP_DIRS = {
@@ -82,6 +86,7 @@ DATA_DIR = Path.home() / ".llmdex" / "indexes"
 def storage_dir(workspace: Path) -> Path:
     """Central storage: ~/.llmdex/indexes/<hash>-<name>/"""
     import hashlib
+
     key = hashlib.sha256(str(workspace).encode()).hexdigest()[:12]
     name = workspace.name
     return DATA_DIR / f"{key}-{name}"
@@ -112,7 +117,9 @@ def parse_files(file_paths: list[str], embed_model, log=_log) -> list:
             all_nodes.extend(nodes)
 
         elif parser_type in CODE_LANGUAGES:
-            code_parser = CodeSplitter(language=parser_type, chunk_lines=40, chunk_lines_overlap=10)
+            code_parser = CodeSplitter(
+                language=parser_type, chunk_lines=40, chunk_lines_overlap=10
+            )
             skipped = 0
             for doc in docs:
                 try:
@@ -134,8 +141,12 @@ def parse_files(file_paths: list[str], embed_model, log=_log) -> list:
     return all_nodes
 
 
-def build_index(workspace: Path, extensions: tuple[str, ...] | None = None,
-                embed_model=None, log=_log) -> dict:
+def build_index(
+    workspace: Path,
+    extensions: tuple[str, ...] | None = None,
+    embed_model=None,
+    log=_log,
+) -> dict:
     """Build vector index for a workspace. Returns stats dict."""
     start = time.time()
 
@@ -169,10 +180,13 @@ def build_index(workspace: Path, extensions: tuple[str, ...] | None = None,
     index.storage_context.persist(persist_dir=str(out))
 
     elapsed = time.time() - start
-    log(f"\nDone! Indexed {len(all_files)} files ({len(all_nodes)} nodes) in {elapsed:.1f}s")
+    log(
+        f"\nDone! Indexed {len(all_files)} files ({len(all_nodes)} nodes) in {elapsed:.1f}s"
+    )
 
     # Register this folder
     from llm_index.registry import register
+
     register(str(workspace), list(extensions))
 
     return {

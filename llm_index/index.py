@@ -18,7 +18,9 @@ def cmd_index(args):
         print(f"Error: {workspace} is not a directory")
         sys.exit(1)
 
-    extensions = tuple(ext if ext.startswith(".") else f".{ext}" for ext in args.extensions)
+    extensions = tuple(
+        ext if ext.startswith(".") else f".{ext}" for ext in args.extensions
+    )
 
     print(f"Indexing: {workspace}")
     print(f"Extensions: {', '.join(extensions)}")
@@ -101,10 +103,19 @@ def main():
             args = argparse.Namespace(directory=sys.argv[2])
             cmd_remove(args)
     else:
-        parser = argparse.ArgumentParser(description="llmdex - index project files for semantic search")
-        parser.add_argument("directory", nargs="?", default=".", help="Project directory to index")
-        parser.add_argument("-e", "--extensions", nargs="+", default=[".md", ".ts", ".json"],
-                            help="File extensions to index (default: .md .ts .json)")
+        parser = argparse.ArgumentParser(
+            description="llmdex - index project files for semantic search"
+        )
+        parser.add_argument(
+            "directory", nargs="?", default=".", help="Project directory to index"
+        )
+        parser.add_argument(
+            "-e",
+            "--extensions",
+            nargs="+",
+            default=[".md", ".ts", ".json"],
+            help="File extensions to index (default: .md .ts .json)",
+        )
         args = parser.parse_args()
         cmd_index(args)
 

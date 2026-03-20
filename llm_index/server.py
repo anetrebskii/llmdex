@@ -51,7 +51,9 @@ class IndexCache:
                 self.get_embed_model()
                 store = storage_dir(workspace)
                 if not store.exists():
-                    raise FileNotFoundError(f"No index at {store}. Run: llmdex-index {workspace}")
+                    raise FileNotFoundError(
+                        f"No index at {store}. Run: llmdex-index {workspace}"
+                    )
                 ctx = StorageContext.from_defaults(persist_dir=str(store))
                 self.indexes[key] = load_index_from_storage(ctx)
             return self.indexes[key]
@@ -132,7 +134,9 @@ class QueryHandler(BaseHTTPRequestHandler):
             return
 
         extensions = body.get("extensions", [".md", ".ts", ".json"])
-        extensions = tuple(ext if ext.startswith(".") else f".{ext}" for ext in extensions)
+        extensions = tuple(
+            ext if ext.startswith(".") else f".{ext}" for ext in extensions
+        )
 
         # Import here to avoid circular import at module level
         from llm_index.indexer import build_index
@@ -168,11 +172,13 @@ class QueryHandler(BaseHTTPRequestHandler):
         items = []
         for node in results:
             source = node.metadata.get("file_path", "unknown")
-            items.append({
-                "score": round(node.score, 4),
-                "source": source,
-                "text": node.text[:500],
-            })
+            items.append(
+                {
+                    "score": round(node.score, 4),
+                    "source": source,
+                    "text": node.text[:500],
+                }
+            )
         return items
 
     def _handle_query(self):
@@ -192,9 +198,12 @@ class QueryHandler(BaseHTTPRequestHandler):
         if search_all:
             # Search across all registered indexes
             from llm_index.registry import list_registered
+
             entries = list_registered()
             if not entries:
-                self._json_response(404, {"error": "No indexed folders. Run: llmdex-index <directory>"})
+                self._json_response(
+                    404, {"error": "No indexed folders. Run: llmdex-index <directory>"}
+                )
                 return
 
             all_items = []
@@ -209,9 +218,15 @@ class QueryHandler(BaseHTTPRequestHandler):
             items = self._query_single(workspace, question, top_k)
             if not items:
                 from llm_index.indexer import storage_dir
+
                 store = storage_dir(workspace)
                 if not store.exists():
-                    self._json_response(404, {"error": f"No index at {store}. Run: llmdex-index {workspace}"})
+                    self._json_response(
+                        404,
+                        {
+                            "error": f"No index at {store}. Run: llmdex-index {workspace}"
+                        },
+                    )
                     return
             self._json_response(200, {"results": items})
 
@@ -266,12 +281,14 @@ class QueryHandler(BaseHTTPRequestHandler):
         items = []
         for directory, meta in entries.items():
             store = storage_dir(Path(directory))
-            items.append({
-                "directory": directory,
-                "extensions": meta.get("extensions", []),
-                "indexed_at": meta.get("indexed_at", "unknown"),
-                "has_index": store.exists(),
-            })
+            items.append(
+                {
+                    "directory": directory,
+                    "extensions": meta.get("extensions", []),
+                    "indexed_at": meta.get("indexed_at", "unknown"),
+                    "has_index": store.exists(),
+                }
+            )
         self._json_response(200, {"folders": items})
 
     def _handle_remove(self):
@@ -287,6 +304,7 @@ class QueryHandler(BaseHTTPRequestHandler):
         directory = str(Path(directory).resolve())
 
         from llm_index.registry import unregister
+
         cache.invalidate(Path(directory))
         if unregister(directory):
             self._json_response(200, {"status": "removed", "directory": directory})
@@ -331,7 +349,9 @@ def start_server(port: int = DEFAULT_PORT, timeout: int = INACTIVITY_TIMEOUT):
     signal.signal(signal.SIGINT, cleanup)
 
     # Start watchdog
-    watchdog = threading.Thread(target=inactivity_watchdog, args=(timeout,), daemon=True)
+    watchdog = threading.Thread(
+        target=inactivity_watchdog, args=(timeout,), daemon=True
+    )
     watchdog.start()
 
     print(f"llmdex server running on http://127.0.0.1:{port}")
@@ -356,8 +376,20 @@ def get_running_server() -> tuple[int, int] | None:
 
 def main():
     parser = argparse.ArgumentParser(description="llmdex persistent server")
-    parser.add_argument("-p", "--port", type=int, default=DEFAULT_PORT, help=f"Port (default: {DEFAULT_PORT})")
-    parser.add_argument("-t", "--timeout", type=int, default=INACTIVITY_TIMEOUT, help="Inactivity timeout in seconds (default: 600)")
+    parser.add_argument(
+        "-p",
+        "--port",
+        type=int,
+        default=DEFAULT_PORT,
+        help=f"Port (default: {DEFAULT_PORT})",
+    )
+    parser.add_argument(
+        "-t",
+        "--timeout",
+        type=int,
+        default=INACTIVITY_TIMEOUT,
+        help="Inactivity timeout in seconds (default: 600)",
+    )
     parser.add_argument("--stop", action="store_true", help="Stop running server")
     args = parser.parse_args()
 
