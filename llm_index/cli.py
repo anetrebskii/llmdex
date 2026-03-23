@@ -98,6 +98,101 @@ def cmd_query(args):
     query_server(port, args.question, args.top_k, directory)
 
 
+INTEGRATE_HEADER = "## LLMDEX — Semantic Search"
+
+INTEGRATE_GLOBAL = """\
+## LLMDEX — Semantic Search
+
+You have access to `llmdex` — a local semantic search tool that indexes project codebases.
+
+### How to search
+
+Instead of using Grep for broad searches, **use `llmdex` first** to find the most relevant files and code locations, then use Grep for detailed analysis within those results.
+
+```bash
+# Search in current project (default: current directory)
+llmdex query "your question"
+
+# Search across ALL indexed projects
+llmdex query -a "your question"
+```
+
+### When to use `-a` (all projects)
+
+If the user asks to search "everywhere", "across all projects", "in all indexes", or similar — always add the `-a` flag:
+```bash
+llmdex query -a "your question"
+```
+
+Without `-a`, the search is scoped to the current project directory only.
+
+### Workflow
+
+1. **First**, run `llmdex query "..."` to find relevant files and code sections
+2. **Then**, use Grep or Read on the found files for detailed analysis
+3. If `llmdex` reports the current directory is not indexed, fall back to Grep/Glob
+
+### Check if a directory is indexed
+
+```bash
+llmdex list
+```
+"""
+
+INTEGRATE_PROJECT = """\
+## LLMDEX — Semantic Search
+
+This project can be searched using `llmdex` — a local semantic search tool.
+
+### How to search this project
+
+Instead of using Grep for broad searches, **use `llmdex` first** to find the most relevant files and code locations, then use Grep for detailed analysis within those results.
+
+```bash
+# Search this project
+llmdex query "your question"
+```
+
+### Workflow
+
+1. **First**, run `llmdex query "..."` to find relevant files and code sections
+2. **Then**, use Grep or Read on the found files for detailed analysis
+3. Before searching, verify the project is indexed by running `llmdex list`. If not indexed, fall back to Grep/Glob
+"""
+
+
+def cmd_init(args):
+    from pathlib import Path
+
+    if args.scope == "global":
+        claude_md = Path.home() / ".claude" / "CLAUDE.md"
+        content = INTEGRATE_GLOBAL
+        label = "global (~/.claude/CLAUDE.md)"
+    else:
+        claude_md = Path(".claude") / "CLAUDE.md"
+        content = INTEGRATE_PROJECT
+        label = f"project ({claude_md})"
+
+    # Ensure parent directory exists
+    claude_md.parent.mkdir(parents=True, exist_ok=True)
+
+    if claude_md.exists():
+        existing = claude_md.read_text()
+        if INTEGRATE_HEADER in existing:
+            print(f"Already integrated in {label}")
+            print(f"  Header '{INTEGRATE_HEADER}' found in {claude_md}")
+            return
+        # Append to existing file
+        separator = "\n" if existing.endswith("\n") else "\n\n"
+        claude_md.write_text(existing + separator + content)
+        print(f"Appended LLMDEX section to {claude_md}")
+    else:
+        claude_md.write_text(content)
+        print(f"Created {claude_md} with LLMDEX section")
+
+    print(f"Integration: {label} — done")
+
+
 def cmd_server(args):
     from llm_index.server import (
         get_running_server,
@@ -218,6 +313,20 @@ def main():
     )
     p_server.add_argument("--serve", action="store_true", help=argparse.SUPPRESS)
 
+    # llmdex init / i
+    p_init = sub.add_parser(
+        "init",
+        aliases=["i"],
+        help="Add LLMDEX instructions to Claude Code CLAUDE.md",
+    )
+    p_init.add_argument(
+        "scope",
+        nargs="?",
+        default="project",
+        choices=["global", "project"],
+        help="Integration scope: 'global' (~/.claude/CLAUDE.md) or 'project' (.claude/CLAUDE.md, default)",
+    )
+
     args = parser.parse_args()
 
     if args.command is None:
@@ -237,6 +346,8 @@ def main():
         "q": cmd_query,
         "server": cmd_server,
         "s": cmd_server,
+        "init": cmd_init,
+        "i": cmd_init,
     }
     dispatch[args.command](args)
 
