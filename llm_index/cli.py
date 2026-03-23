@@ -90,11 +90,38 @@ def cmd_remove(args):
         print(f"Not found in registry: {directory}")
 
 
+def _find_indexed_ancestor(path, get_entry):
+    """Walk up from path to find the nearest indexed ancestor. Returns the directory string or None."""
+    current = path
+    while True:
+        if get_entry(str(current)):
+            return str(current)
+        parent = current.parent
+        if parent == current:
+            return None
+        current = parent
+
+
 def cmd_query(args):
+    from pathlib import Path
     from llm_index.query import ensure_server, query_server
 
-    port = ensure_server()
     directory = None if args.all else args.directory
+
+    # Early check: if searching a specific directory, verify it (or a parent) is indexed
+    if directory is not None:
+        from llm_index.registry import get_entry
+
+        resolved = Path(directory).resolve()
+        indexed_dir = _find_indexed_ancestor(resolved, get_entry)
+        if indexed_dir is None:
+            print(f"Error: '{resolved}' is not indexed.")
+            print(f"Run: llmdex index {resolved}")
+            sys.exit(1)
+        # Use the indexed ancestor directory for the query
+        directory = indexed_dir
+
+    port = ensure_server()
     query_server(port, args.question, args.top_k, directory)
 
 
@@ -104,60 +131,49 @@ INTEGRATE_GLOBAL = """\
 ## LLMDEX — Semantic Search
 
 You have access to `llmdex` — a local semantic search tool that indexes project codebases.
+Use it **instead of Grep** for broad code searches. Use Grep only for precise, targeted lookups within files found by llmdex.
 
-### How to search
+### Search workflow
 
-Instead of using Grep for broad searches, **use `llmdex` first** to find the most relevant files and code locations, then use Grep for detailed analysis within those results.
+1. Run `llmdex query "your question"` to find relevant files and code sections
+2. Use Grep or Read on the found files for detailed analysis
+
+### Commands
 
 ```bash
-# Search in current project (default: current directory)
+# Search current project
 llmdex query "your question"
 
-# Search across ALL indexed projects
+# Search across ALL indexed projects (use when user says "everywhere", "across all projects", "in all indexes")
 llmdex query -a "your question"
+
+# More results (default: 5)
+llmdex query -k 10 "your question"
 ```
 
-### When to use `-a` (all projects)
+### Important: check before searching
 
-If the user asks to search "everywhere", "across all projects", "in all indexes", or similar — always add the `-a` flag:
-```bash
-llmdex query -a "your question"
-```
-
-Without `-a`, the search is scoped to the current project directory only.
-
-### Workflow
-
-1. **First**, run `llmdex query "..."` to find relevant files and code sections
-2. **Then**, use Grep or Read on the found files for detailed analysis
-3. If `llmdex` reports the current directory is not indexed, fall back to Grep/Glob
-
-### Check if a directory is indexed
-
-```bash
-llmdex list
-```
+`llmdex query` will exit with an error if the current directory is not indexed.
+If you get this error, fall back to Grep/Glob for that project.
 """
 
 INTEGRATE_PROJECT = """\
 ## LLMDEX — Semantic Search
 
 This project can be searched using `llmdex` — a local semantic search tool.
+Use it **instead of Grep** for broad code searches. Use Grep only for precise, targeted lookups within files found by llmdex.
 
-### How to search this project
+### Search workflow
 
-Instead of using Grep for broad searches, **use `llmdex` first** to find the most relevant files and code locations, then use Grep for detailed analysis within those results.
+1. Run `llmdex query "your question"` to find relevant files and code sections
+2. Use Grep or Read on the found files for detailed analysis
 
 ```bash
-# Search this project
 llmdex query "your question"
+llmdex query -k 10 "your question"   # more results
 ```
 
-### Workflow
-
-1. **First**, run `llmdex query "..."` to find relevant files and code sections
-2. **Then**, use Grep or Read on the found files for detailed analysis
-3. Before searching, verify the project is indexed by running `llmdex list`. If not indexed, fall back to Grep/Glob
+`llmdex query` will exit with an error if this project is not indexed. If that happens, fall back to Grep/Glob.
 """
 
 

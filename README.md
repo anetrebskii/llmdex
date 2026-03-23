@@ -191,48 +191,15 @@ llmdex index
 
 ## Claude Code integration
 
-Add llmdex as a semantic search tool for Claude Code by adding this to your project's `CLAUDE.md`:
+```bash
+# Add llmdex instructions to the current project's .claude/CLAUDE.md
+llmdex init
 
-```markdown
-## Semantic Search
-
-This project is indexed with llmdex for semantic search.
-When you need to find code by concept (not just filename or keyword), use:
-
-\`\`\`bash
-llmdex query -d /path/to/project "your question" -k 10
-\`\`\`
-
-Use this before grep/glob when:
-- Searching by concept ("how does auth work", "payment processing logic")
-- You don't know the exact file or function name
-- Exploring unfamiliar parts of the codebase
-
-To re-index after major changes:
-\`\`\`bash
-llmdex index /path/to/project
-\`\`\`
+# Add llmdex instructions globally (~/.claude/CLAUDE.md) — works in every project
+llmdex init global
 ```
 
-You can also use the HTTP API via `curl` if the server is running:
-
-```markdown
-## Semantic Search (HTTP API)
-
-llmdex server runs on port 7392. Use it for semantic code search:
-
-\`\`\`bash
-# Search
-curl -s http://127.0.0.1:7392/query \
-  -H "Content-Type: application/json" \
-  -d '{"directory": "/path/to/project", "question": "your question", "top_k": 10}'
-
-# Index
-curl -s http://127.0.0.1:7392/index \
-  -H "Content-Type: application/json" \
-  -d '{"directory": "/path/to/project", "extensions": [".md", ".ts", ".json"]}'
-\`\`\`
-```
+This adds a section to `CLAUDE.md` that teaches Claude Code to use `llmdex` for semantic search instead of Grep when searching by concept. Running it again is safe — it won't duplicate the section.
 
 ## Updating
 
