@@ -169,19 +169,25 @@ class QueryHandler(BaseHTTPRequestHandler):
         result["logs"] = logs
         self._json_response(200, result)
 
-    def _query_single(self, workspace: Path, question: str, top_k: int) -> list[dict]:
+    def _query_single(
+        self, workspace: Path, question: str, top_k: int, folder: str | None = None
+    ) -> list[dict]:
         """Query a single workspace index, return list of result dicts."""
         try:
             index = cache.get_index(workspace)
         except FileNotFoundError:
             return []
 
-        retriever = index.as_retriever(similarity_top_k=top_k)
+        # Over-fetch when filtering by folder to ensure enough results
+        fetch_k = top_k * 5 if folder else top_k
+        retriever = index.as_retriever(similarity_top_k=fetch_k)
         results = retriever.retrieve(question)
 
         items = []
         for node in results:
             source = node.metadata.get("file_path", "unknown")
+            if folder and not source.startswith(folder):
+                continue
             items.append(
                 {
                     "score": round(node.score, 4),
@@ -189,6 +195,8 @@ class QueryHandler(BaseHTTPRequestHandler):
                     "text": node.text[:500],
                 }
             )
+            if len(items) >= top_k:
+                break
         return items
 
     def _handle_query(self):
@@ -199,6 +207,7 @@ class QueryHandler(BaseHTTPRequestHandler):
         directory = body.get("directory")
         question = body.get("question", "")
         top_k = body.get("top_k", 5)
+        folder = body.get("folder")
         search_all = body.get("all", directory is None)
 
         if not question:
@@ -218,14 +227,14 @@ class QueryHandler(BaseHTTPRequestHandler):
 
             all_items = []
             for dir_path in entries:
-                all_items.extend(self._query_single(Path(dir_path), question, top_k))
+                all_items.extend(self._query_single(Path(dir_path), question, top_k, folder))
 
             # Sort by score descending, take top_k
             all_items.sort(key=lambda x: x["score"], reverse=True)
             self._json_response(200, {"results": all_items[:top_k]})
         else:
             workspace = Path(directory).resolve()
-            items = self._query_single(workspace, question, top_k)
+            items = self._query_single(workspace, question, top_k, folder)
             if not items:
                 from llm_index.indexer import storage_dir
 

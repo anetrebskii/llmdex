@@ -122,7 +122,7 @@ def cmd_query(args):
         directory = indexed_dir
 
     port = ensure_server()
-    query_server(port, args.question, args.top_k, directory)
+    query_server(port, args.question, args.top_k, directory, args.folder)
 
 
 INTEGRATE_HEADER = "## LLMDEX — Semantic Search"
@@ -309,6 +309,9 @@ def main():
     )
     p_query.add_argument(
         "-k", "--top-k", type=int, default=5, help="Number of results (default: 5)"
+    )
+    p_query.add_argument(
+        "-f", "--folder", help="Filter results to files under this folder prefix"
     )
 
     # llmdex server / srv

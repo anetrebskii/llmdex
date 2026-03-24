@@ -66,10 +66,12 @@ def ensure_server() -> int:
     return _start_new_server()
 
 
-def query_server(port: int, question: str, top_k: int, directory: str | None = None):
+def query_server(port: int, question: str, top_k: int, directory: str | None = None, folder: str | None = None):
     payload = {"question": question, "top_k": top_k}
     if directory is not None:
         payload["directory"] = str(Path(directory).resolve())
+    if folder is not None:
+        payload["folder"] = folder
     # else: server searches all registered indexes
 
     req = urllib.request.Request(
@@ -121,11 +123,14 @@ def main():
     parser.add_argument(
         "-k", "--top-k", type=int, default=5, help="Number of results (default: 5)"
     )
+    parser.add_argument(
+        "-f", "--folder", help="Filter results to files under this folder prefix"
+    )
     args = parser.parse_args()
 
     port = ensure_server()
     directory = None if args.all else args.directory
-    query_server(port, args.question, args.top_k, directory)
+    query_server(port, args.question, args.top_k, directory, args.folder)
 
 
 if __name__ == "__main__":
