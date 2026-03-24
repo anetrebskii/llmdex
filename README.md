@@ -44,6 +44,18 @@ llmdex query "how does authentication work"
 
 That's it. The first query takes ~25s (model loading), all subsequent queries are instant.
 
+### Using with Claude Code
+
+```bash
+# Add llmdex instructions to Claude Code (global — works in every project)
+llmdex init global
+
+# Or per-project only
+llmdex init
+```
+
+This teaches Claude Code to use `llmdex` for semantic search automatically. See [Claude Code integration](#claude-code-integration) for details.
+
 ## Commands
 
 ### `llmdex index` — Build the index
@@ -61,9 +73,13 @@ llmdex index /path/to/project -e .md .ts .py .json
 
 ### `llmdex reindex` — Re-index all registered projects
 
+Rebuilds indexes for all previously registered projects. Uses the file extensions stored during the original `llmdex index` call.
+
 ```bash
 llmdex reindex
 ```
+
+Skips directories that no longer exist on disk.
 
 ### `llmdex list` — List all indexed projects
 
@@ -117,6 +133,52 @@ Top 5 results:
 ```
 
 Each result shows a relevance score (0-1), the full file path, and a text preview.
+
+You can also filter queries by tag (see below):
+
+```bash
+# Search only indexes tagged "backend"
+llmdex query -t backend "database connection"
+
+# Combine tags (AND logic — matches indexes with ALL specified tags)
+llmdex query -t backend -t api "error handling"
+```
+
+### `llmdex tag` — Set tags on an indexed project
+
+Tags let you organize indexes and filter queries across multiple projects.
+
+```bash
+# Set tags on the current directory
+llmdex tag . backend api
+
+# Set tags on a specific project
+llmdex tag /path/to/project frontend react
+
+# Show current tags for a project
+llmdex tag /path/to/project
+```
+
+Tags replace any previously set tags (they are not additive).
+
+### `llmdex tags` — List all tags
+
+Shows all tags and which indexed directories have each tag.
+
+```bash
+llmdex tags
+```
+
+Output:
+
+```text
+  backend
+    /Users/you/api-service
+    /Users/you/worker
+
+  frontend
+    /Users/you/web-app
+```
 
 ### `llmdex server` — Manage the background server
 
@@ -191,15 +253,22 @@ llmdex index
 
 ## Claude Code integration
 
+### `llmdex init` — Integrate with Claude Code
+
+Adds a `## LLMDEX — Semantic Search` section to `CLAUDE.md` that teaches Claude Code when and how to use `llmdex` for semantic search.
+
 ```bash
-# Add llmdex instructions to the current project's .claude/CLAUDE.md
+# Add to the current project's .claude/CLAUDE.md (default)
 llmdex init
 
-# Add llmdex instructions globally (~/.claude/CLAUDE.md) — works in every project
+# Add globally to ~/.claude/CLAUDE.md — works in every project
 llmdex init global
 ```
 
-This adds a section to `CLAUDE.md` that teaches Claude Code to use `llmdex` for semantic search instead of Grep when searching by concept. Running it again is safe — it won't duplicate the section.
+- **Project scope** (default) — instructions are tailored for single-project use
+- **Global scope** — instructions include cross-project features (tags, `-a` flag)
+- Running it again is safe — it detects the existing section and won't duplicate it
+- Creates `.claude/` directory and `CLAUDE.md` if they don't exist
 
 ## Updating
 
