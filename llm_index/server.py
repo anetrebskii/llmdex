@@ -208,13 +208,31 @@ class QueryHandler(BaseHTTPRequestHandler):
         question = body.get("question", "")
         top_k = body.get("top_k", 5)
         folder = body.get("folder")
-        search_all = body.get("all", directory is None)
+        tags = body.get("tags")
+        search_all = body.get("all", directory is None and tags is None)
 
         if not question:
             self._json_response(400, {"error": "missing 'question'"})
             return
 
-        if search_all:
+        if tags:
+            # Search only indexes matching all given tags
+            from llm_index.registry import find_by_tags
+
+            entries = find_by_tags(tags)
+            if not entries:
+                self._json_response(
+                    404, {"error": f"No indexes found with tags: {', '.join(tags)}"}
+                )
+                return
+
+            all_items = []
+            for dir_path in entries:
+                all_items.extend(self._query_single(Path(dir_path), question, top_k, folder))
+
+            all_items.sort(key=lambda x: x["score"], reverse=True)
+            self._json_response(200, {"results": all_items[:top_k]})
+        elif search_all:
             # Search across all registered indexes
             from llm_index.registry import list_registered
 
@@ -305,6 +323,7 @@ class QueryHandler(BaseHTTPRequestHandler):
                     "directory": directory,
                     "extensions": meta.get("extensions", []),
                     "indexed_at": meta.get("indexed_at", "unknown"),
+                    "tags": meta.get("tags", []),
                     "has_index": store.exists(),
                 }
             )

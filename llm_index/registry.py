@@ -29,9 +29,11 @@ def _save(data: dict[str, dict]):
 def register(directory: str, extensions: list[str]):
     """Add or update a folder in the registry."""
     data = _load()
+    existing_tags = data.get(directory, {}).get("tags", [])
     data[directory] = {
         "extensions": extensions,
         "indexed_at": datetime.now(timezone.utc).isoformat(),
+        "tags": existing_tags,
     }
     _save(data)
 
@@ -60,3 +62,34 @@ def list_registered() -> dict[str, dict]:
 def get_entry(directory: str) -> dict | None:
     """Get registry entry for a folder."""
     return _load().get(directory)
+
+
+def set_tags(directory: str, tags: list[str]):
+    """Set tags for a registered folder. Replaces existing tags."""
+    data = _load()
+    if directory not in data:
+        return False
+    data[directory]["tags"] = sorted(set(tags))
+    _save(data)
+    return True
+
+
+def find_by_tags(tags: list[str]) -> dict[str, dict]:
+    """Return registered folders that have ALL of the given tags."""
+    data = _load()
+    tag_set = set(tags)
+    return {
+        d: meta
+        for d, meta in data.items()
+        if tag_set.issubset(set(meta.get("tags", [])))
+    }
+
+
+def list_all_tags() -> dict[str, list[str]]:
+    """Return {tag: [directory, ...]} mapping of all tags in use."""
+    data = _load()
+    result: dict[str, list[str]] = {}
+    for directory, meta in data.items():
+        for tag in meta.get("tags", []):
+            result.setdefault(tag, []).append(directory)
+    return result

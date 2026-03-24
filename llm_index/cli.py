@@ -12,6 +12,7 @@ sys.stderr.reconfigure(line_buffering=True)
 def cmd_index(args):
     from pathlib import Path
     from llm_index.indexer import build_index
+    from llm_index.registry import set_tags
 
     workspace = Path(args.directory).resolve()
     if not workspace.is_dir():
@@ -29,6 +30,31 @@ def cmd_index(args):
     if result.get("error"):
         print(result["error"])
         sys.exit(1)
+
+    if args.tag:
+        set_tags(str(workspace), args.tag)
+        print(f"Tags: {', '.join(sorted(set(args.tag)))}")
+
+
+def cmd_add(args):
+    from pathlib import Path
+    from llm_index.registry import register, set_tags
+
+    workspace = Path(args.directory).resolve()
+    if not workspace.is_dir():
+        print(f"Error: {workspace} is not a directory")
+        sys.exit(1)
+
+    extensions = [ext if ext.startswith(".") else f".{ext}" for ext in args.extensions]
+    register(str(workspace), extensions)
+
+    if args.tag:
+        set_tags(str(workspace), args.tag)
+
+    tags_str = f" (tags: {', '.join(args.tag)})" if args.tag else ""
+    print(f"Registered: {workspace}{tags_str}")
+    print(f"  extensions: {', '.join(extensions)}")
+    print(f"Run `llmdex reindex` to build the index.")
 
 
 def cmd_reindex(args):
@@ -72,8 +98,11 @@ def cmd_list(args):
         exists = store.exists()
         status = "ok" if exists else "missing index"
         indexed_at = meta.get("indexed_at", "unknown")
+        tags = meta.get("tags", [])
         print(f"  {directory}")
         print(f"    extensions: {extensions}")
+        if tags:
+            print(f"    tags: {', '.join(tags)}")
         print(f"    indexed at: {indexed_at}")
         print(f"    status: {status}")
         print()
@@ -106,7 +135,8 @@ def cmd_query(args):
     from pathlib import Path
     from llm_index.query import ensure_server, query_server
 
-    directory = None if args.all else args.directory
+    tags = args.tag if args.tag else None
+    directory = None if (args.all or tags) else args.directory
 
     # Early check: if searching a specific directory, verify it (or a parent) is indexed
     if directory is not None:
@@ -121,8 +151,58 @@ def cmd_query(args):
         # Use the indexed ancestor directory for the query
         directory = indexed_dir
 
+    # If tags specified, resolve to directories
+    if tags:
+        from llm_index.registry import find_by_tags
+
+        matches = find_by_tags(tags)
+        if not matches:
+            print(f"Error: no indexes found with tags: {', '.join(tags)}")
+            sys.exit(1)
+
     port = ensure_server()
-    query_server(port, args.question, args.top_k, directory, args.folder)
+    query_server(port, args.question, args.top_k, directory, args.folder, tags)
+
+
+def cmd_tag(args):
+    from pathlib import Path
+    from llm_index.registry import get_entry, set_tags
+
+    directory = str(Path(args.directory).resolve())
+    entry = get_entry(directory)
+    if entry is None:
+        print(f"Error: '{directory}' is not indexed.")
+        sys.exit(1)
+
+    if not args.tags:
+        # Show current tags
+        current = entry.get("tags", [])
+        if current:
+            print(f"Tags for {directory}: {', '.join(current)}")
+        else:
+            print(f"No tags for {directory}")
+        return
+
+    if set_tags(directory, args.tags):
+        print(f"Tags set for {directory}: {', '.join(sorted(set(args.tags)))}")
+    else:
+        print(f"Error: '{directory}' is not indexed.")
+        sys.exit(1)
+
+
+def cmd_tags(args):
+    from llm_index.registry import list_all_tags
+
+    tags = list_all_tags()
+    if not tags:
+        print("No tags found. Use: llmdex tag <directory> <tag1> <tag2> ...")
+        return
+
+    for tag, dirs in sorted(tags.items()):
+        print(f"  {tag}")
+        for d in dirs:
+            print(f"    {d}")
+        print()
 
 
 INTEGRATE_HEADER = "## LLMDEX — Semantic Search"
@@ -131,49 +211,63 @@ INTEGRATE_GLOBAL = """\
 ## LLMDEX — Semantic Search
 
 You have access to `llmdex` — a local semantic search tool that indexes project codebases.
-Use it **instead of Grep** for broad code searches. Use Grep only for precise, targeted lookups within files found by llmdex.
+The registry may contain many indexes: different projects, and even separate indexes within a project (e.g. docs, code, configs). Tags are the primary way to navigate them.
 
-### Search workflow
+### When to use
 
-1. Run `llmdex query "your question"` to find relevant files and code sections
-2. Use Grep or Read on the found files for detailed analysis
+- **Use llmdex** for exploratory searches: "where is authentication handled?", "how does the billing flow work?", "find code related to caching". It understands meaning, not just keywords.
+- **Use Grep** for exact lookups: a specific function name, error message, or import path.
+- **Use llmdex first**, then Grep/Read on the files it finds for detailed analysis.
 
 ### Commands
 
 ```bash
-# Search current project
+# Search current project (run from inside the project directory)
 llmdex query "your question"
 
-# Search across ALL indexed projects (use when user says "everywhere", "across all projects", "in all indexes")
+# Search only indexes with a specific tag (recommended for cross-project searches)
+llmdex query -t <tag> "your question"
+
+# Combine multiple tags (AND logic — matches indexes that have ALL tags)
+llmdex query -t backend -t api "your question"
+
+# Search across ALL indexed projects (use sparingly — prefer tags for precision)
 llmdex query -a "your question"
 
-# More results (default: 5)
+# Discover available tags and which indexes they cover — run this first when unsure
+llmdex tags
+
+# Return more results (default: 5)
 llmdex query -k 10 "your question"
 ```
 
-### Important: check before searching
+### Important
 
-`llmdex query` will exit with an error if the current directory is not indexed.
-If you get this error, fall back to Grep/Glob for that project.
+- `llmdex query` exits with an error if the current directory is not indexed. Fall back to Grep/Glob if that happens.
+- When the user asks to search "everywhere" or "across all projects", use `-a`.
+- When the user refers to a domain, project, or layer (e.g. "in the backend", "in docs", "in our mobile apps"), run `llmdex tags` first to discover matching tags, then use `-t <tag>`.
+- Prefer `-t <tag>` over `-a` when possible — it gives more relevant results and is faster.
 """
 
 INTEGRATE_PROJECT = """\
 ## LLMDEX — Semantic Search
 
-This project can be searched using `llmdex` — a local semantic search tool.
-Use it **instead of Grep** for broad code searches. Use Grep only for precise, targeted lookups within files found by llmdex.
+This project is indexed by `llmdex` — a local semantic search tool.
 
-### Search workflow
+### When to use
 
-1. Run `llmdex query "your question"` to find relevant files and code sections
-2. Use Grep or Read on the found files for detailed analysis
+- **Use llmdex** for exploratory searches: "where is authentication handled?", "how does the billing flow work?". It understands meaning, not just keywords.
+- **Use Grep** for exact lookups: a specific function name, error message, or import path.
+- **Use llmdex first**, then Grep/Read on the files it finds for detailed analysis.
 
 ```bash
 llmdex query "your question"
-llmdex query -k 10 "your question"   # more results
+llmdex query -k 10 "your question"       # more results
+llmdex query -t <tag> "your question"     # search by tag across projects
+llmdex tags                               # discover available tags
 ```
 
-`llmdex query` will exit with an error if this project is not indexed. If that happens, fall back to Grep/Glob.
+If `llmdex query` exits with an error, the index may be stale — fall back to Grep/Glob.
 """
 
 
@@ -284,6 +378,31 @@ def main():
         default=[".md", ".ts", ".json"],
         help="File extensions to index (default: .md .ts .json)",
     )
+    p_index.add_argument(
+        "-t",
+        "--tag",
+        action="append",
+        help="Tag to assign (can be repeated, e.g. -t project:foo -t type:code)",
+    )
+
+    # llmdex add
+    p_add = sub.add_parser("add", help="Register a project without indexing (use reindex later)")
+    p_add.add_argument(
+        "directory", nargs="?", default=".", help="Project directory (default: .)"
+    )
+    p_add.add_argument(
+        "-e",
+        "--extensions",
+        nargs="+",
+        default=[".md", ".ts", ".json"],
+        help="File extensions to index (default: .md .ts .json)",
+    )
+    p_add.add_argument(
+        "-t",
+        "--tag",
+        action="append",
+        help="Tag to assign (can be repeated, e.g. -t project:foo -t type:code)",
+    )
 
     # llmdex reindex / re
     sub.add_parser("reindex", aliases=["re"], help="Re-index all registered projects")
@@ -313,6 +432,22 @@ def main():
     p_query.add_argument(
         "-f", "--folder", help="Filter results to files under this folder prefix"
     )
+    p_query.add_argument(
+        "-t",
+        "--tag",
+        action="append",
+        help="Search only indexes with this tag (can be repeated)",
+    )
+
+    # llmdex tag
+    p_tag = sub.add_parser("tag", help="Set tags on an indexed project")
+    p_tag.add_argument(
+        "directory", nargs="?", default=".", help="Project directory (default: .)"
+    )
+    p_tag.add_argument("tags", nargs="*", help="Tags to set (omit to show current)")
+
+    # llmdex tags
+    sub.add_parser("tags", help="List all tags and their indexes")
 
     # llmdex server / srv
     p_server = sub.add_parser("server", aliases=["s"], help="Manage the background server")
@@ -355,6 +490,7 @@ def main():
     dispatch = {
         "index": cmd_index,
         "idx": cmd_index,
+        "add": cmd_add,
         "reindex": cmd_reindex,
         "re": cmd_reindex,
         "list": cmd_list,
@@ -363,6 +499,8 @@ def main():
         "rm": cmd_remove,
         "query": cmd_query,
         "q": cmd_query,
+        "tag": cmd_tag,
+        "tags": cmd_tags,
         "server": cmd_server,
         "s": cmd_server,
         "init": cmd_init,

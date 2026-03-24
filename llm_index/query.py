@@ -66,12 +66,14 @@ def ensure_server() -> int:
     return _start_new_server()
 
 
-def query_server(port: int, question: str, top_k: int, directory: str | None = None, folder: str | None = None):
+def query_server(port: int, question: str, top_k: int, directory: str | None = None, folder: str | None = None, tags: list[str] | None = None):
     payload = {"question": question, "top_k": top_k}
     if directory is not None:
         payload["directory"] = str(Path(directory).resolve())
     if folder is not None:
         payload["folder"] = folder
+    if tags is not None:
+        payload["tags"] = tags
     # else: server searches all registered indexes
 
     req = urllib.request.Request(
