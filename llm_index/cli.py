@@ -54,7 +54,7 @@ def cmd_add(args):
     tags_str = f" (tags: {', '.join(args.tag)})" if args.tag else ""
     print(f"Registered: {workspace}{tags_str}")
     print(f"  extensions: {', '.join(extensions)}")
-    print(f"Run `llmdex reindex` to build the index.")
+    print("Run `llmdex reindex` to build the index.")
 
 
 def cmd_reindex(args):
