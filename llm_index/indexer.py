@@ -2,6 +2,7 @@
 """Core indexing logic, shared by CLI and server."""
 
 import os
+import subprocess
 import time
 from pathlib import Path
 
@@ -69,14 +70,38 @@ PARSER_MAP = {
 CODE_LANGUAGES = {"typescript", "javascript", "python", "rust", "go", "java"}
 
 
+def _git_ignored_files(root: Path, files: list[str]) -> set[str]:
+    """Return subset of files that are git-ignored. Uses git check-ignore."""
+    if not (root / ".git").exists():
+        return set()
+    try:
+        result = subprocess.run(
+            ["git", "check-ignore", "--stdin", "-z"],
+            input="\0".join(files),
+            capture_output=True,
+            text=True,
+            cwd=root,
+            timeout=30,
+        )
+        if result.returncode not in (0, 1):  # 1 = none ignored
+            return set()
+        return set(result.stdout.strip("\0").split("\0")) if result.stdout else set()
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return set()
+
+
 def collect_files(root: Path, extensions: tuple[str, ...]) -> list[str]:
-    """Collect files matching extensions, skipping ignored directories."""
+    """Collect files matching extensions, skipping ignored directories and gitignored files."""
     files = []
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
         for f in filenames:
             if f.endswith(extensions):
                 files.append(os.path.join(dirpath, f))
+
+    ignored = _git_ignored_files(root, files)
+    if ignored:
+        files = [f for f in files if f not in ignored]
     return files
 
 
