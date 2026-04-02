@@ -25,7 +25,7 @@ def cmd_index(args):
 
     print(f"Indexing: {workspace}")
     print(f"Extensions: {', '.join(extensions)}")
-    result = build_index(workspace, extensions)
+    result = build_index(workspace, extensions, verbose=args.verbose)
 
     if result.get("error"):
         print(result["error"])
@@ -76,7 +76,7 @@ def cmd_reindex(args):
 
         extensions = tuple(meta.get("extensions", [".md", ".ts", ".json"]))
         print(f"--- {directory} ({', '.join(extensions)}) ---")
-        result = build_index(workspace, extensions)
+        result = build_index(workspace, extensions, verbose=args.verbose)
         if result.get("error"):
             print(f"  Error: {result['error']}")
         print()
@@ -384,6 +384,12 @@ def main():
         action="append",
         help="Tag to assign (can be repeated, e.g. -t project:foo -t type:code)",
     )
+    p_index.add_argument(
+        "-V",
+        "--verbose",
+        action="store_true",
+        help="Show individual file paths",
+    )
 
     # llmdex add
     p_add = sub.add_parser("add", help="Register a project without indexing (use reindex later)")
@@ -405,7 +411,13 @@ def main():
     )
 
     # llmdex reindex / re
-    sub.add_parser("reindex", aliases=["re"], help="Re-index all registered projects")
+    p_reindex = sub.add_parser("reindex", aliases=["re"], help="Re-index all registered projects")
+    p_reindex.add_argument(
+        "-V",
+        "--verbose",
+        action="store_true",
+        help="Show individual file paths",
+    )
 
     # llmdex list / ls
     sub.add_parser("list", aliases=["ls"], help="List all indexed projects")

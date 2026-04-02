@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Core indexing logic, shared by CLI and server."""
 
+import logging
 import os
 import subprocess
 import time
@@ -90,8 +91,9 @@ def _git_ignored_files(root: Path, files: list[str]) -> set[str]:
         return set()
 
 
-def collect_files(root: Path, extensions: tuple[str, ...]) -> list[str]:
-    """Collect files matching extensions, skipping ignored directories and gitignored files."""
+def collect_files(root: Path, extensions: tuple[str, ...]) -> tuple[list[str], int]:
+    """Collect files matching extensions, skipping ignored directories and gitignored files.
+    Returns (files, gitignored_count)."""
     files = []
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
@@ -102,7 +104,7 @@ def collect_files(root: Path, extensions: tuple[str, ...]) -> list[str]:
     ignored = _git_ignored_files(root, files)
     if ignored:
         files = [f for f in files if f not in ignored]
-    return files
+    return files, len(ignored)
 
 
 DATA_DIR = Path.home() / ".llmdex" / "indexes"
@@ -171,6 +173,7 @@ def build_index(
     extensions: tuple[str, ...] | None = None,
     embed_model=None,
     log=_log,
+    verbose: bool = False,
 ) -> dict:
     """Build vector index for a workspace. Returns stats dict."""
     start = time.time()
@@ -180,15 +183,42 @@ def build_index(
 
     if embed_model is None:
         log("Loading embedding model (all-MiniLM-L6-v2)...")
-        embed_model = HuggingFaceEmbedding(model_name="all-MiniLM-L6-v2")
-        Settings.embed_model = embed_model
-        Settings.llm = None
+        if not verbose:
+            # Suppress noisy HF/BERT/LlamaIndex logs
+            for name in ("httpx", "sentence_transformers", "llama_index"):
+                logging.getLogger(name).setLevel(logging.WARNING)
+            _orig_stdout = os.dup(1)
+            _orig_stderr = os.dup(2)
+            _devnull = os.open(os.devnull, os.O_WRONLY)
+            os.dup2(_devnull, 1)
+            os.dup2(_devnull, 2)
+        try:
+            embed_model = HuggingFaceEmbedding(model_name="all-MiniLM-L6-v2")
+            Settings.embed_model = embed_model
+            Settings.llm = None
+        finally:
+            if not verbose:
+                os.dup2(_orig_stdout, 1)
+                os.dup2(_orig_stderr, 2)
+                os.close(_devnull)
+                os.close(_orig_stdout)
+                os.close(_orig_stderr)
 
-    all_files = collect_files(workspace, extensions)
-    log(f"Found {len(all_files)} files")
+    all_files, gitignored = collect_files(workspace, extensions)
 
+    # Show per-extension counts
+    ext_counts: dict[str, int] = {}
     for f in all_files:
-        log(f"  {f}")
+        ext = os.path.splitext(f)[1].lower()
+        ext_counts[ext] = ext_counts.get(ext, 0) + 1
+    summary = ", ".join(f"{count} {ext}" for ext, count in sorted(ext_counts.items()))
+    log(f"Found {len(all_files)} files ({summary})")
+    if gitignored:
+        log(f"Excluded {gitignored} file(s) via .gitignore")
+
+    if verbose:
+        for f in all_files:
+            log(f"  {f}")
 
     if not all_files:
         return {"files": 0, "nodes": 0, "elapsed": 0, "error": "No files found"}
