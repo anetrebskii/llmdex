@@ -19,7 +19,7 @@ from llama_index.core.node_parser import (
 )
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 
-EMBED_MODEL_NAME = "all-MiniLM-L6-v2"
+EMBED_MODEL_NAME = "BAAI/bge-small-en-v1.5"
 
 SKIP_DIRS = {
     "node_modules",
