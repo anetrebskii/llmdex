@@ -66,7 +66,16 @@ def ensure_server() -> int:
     return _start_new_server()
 
 
-def query_server(port: int, question: str, top_k: int, directory: str | None = None, folder: str | None = None, tags: list[str] | None = None):
+def _make_loc(source: str, start_line: int | None, end_line: int | None) -> str:
+    loc = source
+    if start_line and end_line:
+        loc += f":{start_line}-{end_line}"
+    elif start_line:
+        loc += f":{start_line}"
+    return loc
+
+
+def query_server(port: int, question: str, top_k: int, directory: str | None = None, folder: str | None = None, tags: list[str] | None = None, compact: bool = False):
     payload = {"question": question, "top_k": top_k}
     if directory is not None:
         payload["directory"] = str(Path(directory).resolve())
@@ -100,20 +109,25 @@ def query_server(port: int, question: str, top_k: int, directory: str | None = N
         sys.exit(1)
 
     results = data["results"]
-    print(f"\nQuery: {question}")
+
+    if compact:
+        # Minimal output for AI/automation: one line per result, no preview
+        for item in results:
+            loc = _make_loc(item["source"], item.get("start_line"), item.get("end_line"))
+            print(f"[{item['score']:.3f}] {loc}")
+        return
+
+    print(f"Query: {question}")
     print(f"Top {len(results)} results:\n")
 
     for i, item in enumerate(results, 1):
-        loc = item["source"]
-        start = item.get("start_line")
-        end = item.get("end_line")
-        if start and end:
-            loc += f":{start}-{end}"
-        elif start:
-            loc += f":{start}"
+        loc = _make_loc(item["source"], item.get("start_line"), item.get("end_line"))
         print(f"{i}. [{item['score']:.3f}] {loc}")
-        preview = item["text"][:200].replace("\n", " ")
-        print(f"   {preview}...")
+        # Show full chunk with line numbers
+        start = item.get("start_line", 1)
+        lines = item["text"].split("\n")
+        for j, line in enumerate(lines):
+            print(f"   {start + j}\t{line}")
         print()
 
 

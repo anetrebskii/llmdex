@@ -191,7 +191,7 @@ class QueryHandler(BaseHTTPRequestHandler):
             item = {
                 "score": round(node.score, 4),
                 "source": source,
-                "text": node.text[:500],
+                "text": node.text,
             }
             start_line = node.metadata.get("start_line")
             end_line = node.metadata.get("end_line")

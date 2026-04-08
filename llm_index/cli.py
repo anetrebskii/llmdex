@@ -161,7 +161,7 @@ def cmd_query(args):
             sys.exit(1)
 
     port = ensure_server()
-    query_server(port, args.question, args.top_k, directory, args.folder, tags)
+    query_server(port, args.question, args.top_k, directory, args.folder, tags, compact=args.compact)
 
 
 def cmd_tag(args):
@@ -449,6 +449,12 @@ def main():
         "--tag",
         action="append",
         help="Search only indexes with this tag (can be repeated)",
+    )
+    p_query.add_argument(
+        "-c",
+        "--compact",
+        action="store_true",
+        help="Compact output: file:lines only, no preview (for AI/automation)",
     )
 
     # llmdex tag
