@@ -35,6 +35,9 @@ def cmd_index(args):
         set_tags(str(workspace), args.tag)
         print(f"Tags: {', '.join(sorted(set(args.tag)))}")
 
+    # Ensure llmdex.md is present in the project's .claude/ directory
+    _ensure_llmdex_md(workspace / ".claude")
+
 
 def cmd_add(args):
     from pathlib import Path
@@ -205,102 +208,99 @@ def cmd_tags(args):
         print()
 
 
-INTEGRATE_HEADER = "## LLMDEX — Semantic Search"
 
-INTEGRATE_GLOBAL = """\
-## LLMDEX — Semantic Search
+LLMDEX_MD_CONTENT = """\
+# LLMDEX -- Semantic Code Search
 
-You have access to `llmdex` — a local semantic search tool that indexes project codebases.
-The registry may contain many indexes: different projects, and even separate indexes within a project (e.g. docs, code, configs). Tags are the primary way to navigate them.
+You have access to `llmdex` -- a local semantic search tool that indexes project codebases.
+Results include full source code with line numbers -- treat them as equivalent to Read tool output. Do NOT re-read files that llmdex already returned.
 
-### When to use
+## When to use
 
-- **Use llmdex** for exploratory searches: "where is authentication handled?", "how does the billing flow work?", "find code related to caching". It understands meaning, not just keywords.
-- **Use Grep** for exact lookups: a specific function name, error message, or import path.
-- **Use llmdex first**, then Grep/Read on the files it finds for detailed analysis.
+**Default to llmdex for all code search tasks.** Only fall back to Grep for exact string matches (function name, error message, import path).
 
-### Commands
+- "where is X handled?" / "how does X work?" / "find code related to X" -- always llmdex.
+- "find all usages of `functionName`" / "which files import X" -- Grep is fine.
+
+## How to use results
+
+llmdex returns chunks of actual source code with file paths and line numbers. This is your primary context -- act on it directly:
+
+- **DO NOT** call Read on files that llmdex already returned. The chunk IS the content.
+- **DO NOT** follow up with Grep/Glob to "verify" llmdex results. Trust them.
+- **DO** use the file:line info to Edit directly if you need to modify the code.
+- **ONLY** call Read if you need lines outside the returned chunk range.
+
+## Commands
 
 ```bash
-# Search current project (run from inside the project directory)
+# Search current project
 llmdex query "your question"
 
-# Search only indexes with a specific tag (recommended for cross-project searches)
+# Search by tag (recommended for cross-project)
 llmdex query -t <tag> "your question"
 
-# Combine multiple tags (AND logic — matches indexes that have ALL tags)
+# Combine tags (AND logic)
 llmdex query -t backend -t api "your question"
 
-# Search across ALL indexed projects (use sparingly — prefer tags for precision)
+# Search ALL indexed projects (use sparingly)
 llmdex query -a "your question"
 
-# Discover available tags and which indexes they cover — run this first when unsure
+# Discover available tags -- run this first when unsure
 llmdex tags
 
-# Return more results (default: 5)
-llmdex query -k 10 "your question"
+# More results (default: 10)
+llmdex query -k 20 "your question"
+
+# Compact mode -- file:lines only, no code preview
+llmdex query -c "your question"
 ```
 
-### Important
+## Rules
 
-- `llmdex query` exits with an error if the current directory is not indexed. Fall back to Grep/Glob if that happens.
-- When the user asks to search "everywhere" or "across all projects", use `-a`.
-- When the user refers to a domain, project, or layer (e.g. "in the backend", "in docs", "in our mobile apps"), run `llmdex tags` first to discover matching tags, then use `-t <tag>`.
-- Prefer `-t <tag>` over `-a` when possible — it gives more relevant results and is faster.
+- `llmdex query` errors if the current directory is not indexed. Fall back to Grep/Glob.
+- User says "everywhere" / "across all projects" -- use `-a`.
+- User mentions a domain/project/layer ("in the backend", "in docs") -- run `llmdex tags` first, then `-t <tag>`.
+- Prefer `-t <tag>` over `-a` -- more relevant, faster.
+- Results use hybrid search (BM25 + vector), so both exact keyword matches and semantic matches are returned.
 """
 
-INTEGRATE_PROJECT = """\
-## LLMDEX — Semantic Search
+INTEGRATE_REFERENCE = "@llmdex.md\n"
 
-This project is indexed by `llmdex` — a local semantic search tool.
 
-### When to use
+def _ensure_llmdex_md(claude_dir):
+    """Write llmdex.md and add @llmdex.md to CLAUDE.md if not present."""
+    from pathlib import Path
 
-- **Use llmdex** for exploratory searches: "where is authentication handled?", "how does the billing flow work?". It understands meaning, not just keywords.
-- **Use Grep** for exact lookups: a specific function name, error message, or import path.
-- **Use llmdex first**, then Grep/Read on the files it finds for detailed analysis.
+    claude_dir = Path(claude_dir)
+    claude_dir.mkdir(parents=True, exist_ok=True)
 
-```bash
-llmdex query "your question"
-llmdex query -k 10 "your question"       # more results
-llmdex query -t <tag> "your question"     # search by tag across projects
-llmdex tags                               # discover available tags
-```
+    llmdex_md = claude_dir / "llmdex.md"
+    llmdex_md.write_text(LLMDEX_MD_CONTENT)
 
-If `llmdex query` exits with an error, the index may be stale — fall back to Grep/Glob.
-"""
+    claude_md = claude_dir / "CLAUDE.md"
+    if claude_md.exists():
+        existing = claude_md.read_text()
+        if "@llmdex.md" not in existing:
+            separator = "\n" if existing.endswith("\n") else "\n\n"
+            claude_md.write_text(existing + separator + INTEGRATE_REFERENCE)
+    else:
+        claude_md.write_text(INTEGRATE_REFERENCE)
 
 
 def cmd_init(args):
     from pathlib import Path
 
     if args.scope == "global":
-        claude_md = Path.home() / ".claude" / "CLAUDE.md"
-        content = INTEGRATE_GLOBAL
-        label = "global (~/.claude/CLAUDE.md)"
+        claude_dir = Path.home() / ".claude"
+        label = "global (~/.claude/)"
     else:
-        claude_md = Path(".claude") / "CLAUDE.md"
-        content = INTEGRATE_PROJECT
-        label = f"project ({claude_md})"
+        claude_dir = Path(".claude")
+        label = f"project ({claude_dir}/)"
 
-    # Ensure parent directory exists
-    claude_md.parent.mkdir(parents=True, exist_ok=True)
-
-    if claude_md.exists():
-        existing = claude_md.read_text()
-        if INTEGRATE_HEADER in existing:
-            print(f"Already integrated in {label}")
-            print(f"  Header '{INTEGRATE_HEADER}' found in {claude_md}")
-            return
-        # Append to existing file
-        separator = "\n" if existing.endswith("\n") else "\n\n"
-        claude_md.write_text(existing + separator + content)
-        print(f"Appended LLMDEX section to {claude_md}")
-    else:
-        claude_md.write_text(content)
-        print(f"Created {claude_md} with LLMDEX section")
-
-    print(f"Integration: {label} — done")
+    _ensure_llmdex_md(claude_dir)
+    print(f"Wrote {claude_dir / 'llmdex.md'}")
+    print(f"Integration: {label} -- done")
 
 
 def cmd_server(args):
@@ -439,7 +439,7 @@ def main():
         "-a", "--all", action="store_true", help="Search across all indexed projects"
     )
     p_query.add_argument(
-        "-k", "--top-k", type=int, default=5, help="Number of results (default: 5)"
+        "-k", "--top-k", type=int, default=10, help="Number of results (default: 10)"
     )
     p_query.add_argument(
         "-f", "--folder", help="Filter results to files under this folder prefix"

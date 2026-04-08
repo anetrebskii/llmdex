@@ -144,7 +144,7 @@ def main():
         "-a", "--all", action="store_true", help="Search across all indexed projects"
     )
     parser.add_argument(
-        "-k", "--top-k", type=int, default=5, help="Number of results (default: 5)"
+        "-k", "--top-k", type=int, default=10, help="Number of results (default: 10)"
     )
     parser.add_argument(
         "-f", "--folder", help="Filter results to files under this folder prefix"
