@@ -104,7 +104,14 @@ def query_server(port: int, question: str, top_k: int, directory: str | None = N
     print(f"Top {len(results)} results:\n")
 
     for i, item in enumerate(results, 1):
-        print(f"{i}. [{item['score']:.3f}] {item['source']}")
+        loc = item["source"]
+        start = item.get("start_line")
+        end = item.get("end_line")
+        if start and end:
+            loc += f":{start}-{end}"
+        elif start:
+            loc += f":{start}"
+        print(f"{i}. [{item['score']:.3f}] {loc}")
         preview = item["text"][:200].replace("\n", " ")
         print(f"   {preview}...")
         print()

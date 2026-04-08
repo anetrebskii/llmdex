@@ -188,13 +188,18 @@ class QueryHandler(BaseHTTPRequestHandler):
             source = node.metadata.get("file_path", "unknown")
             if folder and not source.startswith(folder):
                 continue
-            items.append(
-                {
-                    "score": round(node.score, 4),
-                    "source": source,
-                    "text": node.text[:500],
-                }
-            )
+            item = {
+                "score": round(node.score, 4),
+                "source": source,
+                "text": node.text[:500],
+            }
+            start_line = node.metadata.get("start_line")
+            end_line = node.metadata.get("end_line")
+            if start_line is not None:
+                item["start_line"] = start_line
+            if end_line is not None:
+                item["end_line"] = end_line
+            items.append(item)
             if len(items) >= top_k:
                 break
         return items

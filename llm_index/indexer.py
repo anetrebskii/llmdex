@@ -165,6 +165,44 @@ def parse_files(file_paths: list[str], embed_model, log=_log) -> list:
 
         log(f"  -> {len(nodes) if parser_type != 'markdown' else len(all_nodes)} nodes")
 
+    # Compute line numbers for each node from character offsets
+    # Group nodes by file to avoid re-reading the same file
+    nodes_by_file: dict[str, list] = {}
+    for node in all_nodes:
+        fp = node.metadata.get("file_path")
+        if fp and (node.start_char_idx is not None or node.end_char_idx is not None):
+            nodes_by_file.setdefault(fp, []).append(node)
+
+    for fp, nodes in nodes_by_file.items():
+        try:
+            with open(fp, "r", encoding="utf-8", errors="replace") as fh:
+                content = fh.read()
+        except OSError:
+            continue
+
+        # Build cumulative newline positions once per file
+        newlines = [-1]  # sentinel: "line 1 starts after index -1"
+        for i, ch in enumerate(content):
+            if ch == "\n":
+                newlines.append(i)
+
+        def _char_to_line(idx: int) -> int:
+            # Binary search for the line number
+            lo, hi = 0, len(newlines) - 1
+            while lo <= hi:
+                mid = (lo + hi) // 2
+                if newlines[mid] < idx:
+                    lo = mid + 1
+                else:
+                    hi = mid - 1
+            return lo  # 1-based line number
+
+        for node in nodes:
+            if node.start_char_idx is not None:
+                node.metadata["start_line"] = _char_to_line(node.start_char_idx)
+            if node.end_char_idx is not None:
+                node.metadata["end_line"] = _char_to_line(node.end_char_idx)
+
     return all_nodes
 
 
