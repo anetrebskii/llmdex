@@ -6,7 +6,7 @@ import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 
-from llm_index.indexer import storage_dir
+from llm_index.indexer import storage_dir, EMBED_MODEL_NAME
 
 REGISTRY_FILE = Path.home() / ".llmdex" / "registry.json"
 
@@ -34,6 +34,7 @@ def register(directory: str, extensions: list[str]):
         "extensions": extensions,
         "indexed_at": datetime.now(timezone.utc).isoformat(),
         "tags": existing_tags,
+        "embed_model": EMBED_MODEL_NAME,
     }
     _save(data)
 

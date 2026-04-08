@@ -4,6 +4,7 @@
 import argparse
 import json
 import os
+import re
 import signal
 import sys
 import threading
@@ -20,7 +21,7 @@ from llama_index.core import (
 )
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 
-from llm_index.indexer import storage_dir
+from llm_index.indexer import storage_dir, EMBED_MODEL_NAME
 
 INACTIVITY_TIMEOUT = 1800  # 30 minutes
 PID_DIR = Path.home() / ".llmdex"
@@ -39,17 +40,26 @@ def pid_file() -> Path:
     return PID_DIR / "server.pid"
 
 
+def _tokenize_code(text: str) -> list[str]:
+    """Tokenize text for BM25, splitting on code boundaries."""
+    # Split camelCase and PascalCase
+    text = re.sub(r'([a-z])([A-Z])', r'\1 \2', text)
+    # Extract alphanumeric tokens (keeps underscored identifiers)
+    return re.findall(r'[a-zA-Z_][a-zA-Z0-9_]*|[0-9]+', text.lower())
+
+
 class IndexCache:
     """Lazy-loads and caches embed model + per-workspace indexes."""
 
     def __init__(self):
         self.embed_model = None
         self.indexes: dict[str, object] = {}
-        self.lock = threading.Lock()
+        self.bm25_data: dict[str, tuple] = {}  # key -> (BM25Okapi, node_list)
+        self.lock = threading.RLock()
 
     def get_embed_model(self):
         if self.embed_model is None:
-            self.embed_model = HuggingFaceEmbedding(model_name="all-MiniLM-L6-v2")
+            self.embed_model = HuggingFaceEmbedding(model_name=EMBED_MODEL_NAME)
             Settings.embed_model = self.embed_model
             Settings.llm = None
         return self.embed_model
@@ -64,14 +74,38 @@ class IndexCache:
                     raise FileNotFoundError(
                         f"No index at {store}. Run: llmdex index {workspace}"
                     )
+                # Check for embedding model mismatch
+                from llm_index.registry import get_entry
+                entry = get_entry(key)
+                if entry:
+                    stored_model = entry.get("embed_model", "all-MiniLM-L6-v2")
+                    if stored_model != EMBED_MODEL_NAME:
+                        raise ValueError(
+                            f"Index was built with '{stored_model}' "
+                            f"but current model is '{EMBED_MODEL_NAME}'. "
+                            f"Run: llmdex reindex"
+                        )
                 ctx = StorageContext.from_defaults(persist_dir=str(store))
                 self.indexes[key] = load_index_from_storage(ctx)
             return self.indexes[key]
+
+    def get_bm25(self, workspace: Path):
+        key = str(workspace)
+        with self.lock:
+            if key not in self.bm25_data:
+                index = self.get_index(workspace)
+                all_nodes = list(index.docstore.docs.values())
+                corpus = [_tokenize_code(node.get_content()) for node in all_nodes]
+                from rank_bm25 import BM25Okapi
+                bm25 = BM25Okapi(corpus)
+                self.bm25_data[key] = (bm25, all_nodes)
+            return self.bm25_data[key]
 
     def invalidate(self, workspace: Path):
         key = str(workspace)
         with self.lock:
             self.indexes.pop(key, None)
+            self.bm25_data.pop(key, None)
 
 
 cache = IndexCache()
@@ -175,26 +209,72 @@ class QueryHandler(BaseHTTPRequestHandler):
         """Query a single workspace index, return list of result dicts."""
         try:
             index = cache.get_index(workspace)
-        except FileNotFoundError:
+        except (FileNotFoundError, ValueError):
             return []
 
-        # Over-fetch when filtering by folder to ensure enough results
-        fetch_k = top_k * 5 if folder else top_k
+        fetch_k = top_k * 3
+        if folder:
+            fetch_k *= 2
+
+        # Vector retrieval
         retriever = index.as_retriever(similarity_top_k=fetch_k)
-        results = retriever.retrieve(question)
+        vector_results = retriever.retrieve(question)
+
+        # BM25 retrieval
+        bm25_results = []
+        try:
+            bm25, all_nodes = cache.get_bm25(workspace)
+            query_tokens = _tokenize_code(question)
+            scores = bm25.get_scores(query_tokens)
+            top_indices = sorted(
+                range(len(scores)), key=lambda i: scores[i], reverse=True
+            )[:fetch_k]
+            bm25_results = [
+                (all_nodes[i], scores[i]) for i in top_indices if scores[i] > 0
+            ]
+        except Exception:
+            pass  # fall back to vector-only
+
+        # Reciprocal Rank Fusion
+        RRF_K = 60
+        fused_scores: dict[str, float] = {}
+        node_map: dict[str, object] = {}  # node_id -> node or NodeWithScore
+
+        for rank, nws in enumerate(vector_results):
+            nid = nws.node.node_id
+            fused_scores[nid] = fused_scores.get(nid, 0) + 1.0 / (RRF_K + rank + 1)
+            node_map[nid] = nws
+
+        for rank, (node, _bm25_score) in enumerate(bm25_results):
+            nid = node.node_id
+            fused_scores[nid] = fused_scores.get(nid, 0) + 1.0 / (RRF_K + rank + 1)
+            if nid not in node_map:
+                node_map[nid] = node
+
+        ranked = sorted(fused_scores.items(), key=lambda x: x[1], reverse=True)
 
         items = []
-        for node in results:
-            source = node.metadata.get("file_path", "unknown")
+        for nid, score in ranked:
+            entry = node_map[nid]
+            # NodeWithScore (vector) vs raw BaseNode (BM25-only)
+            if hasattr(entry, "node"):
+                metadata = entry.node.metadata
+                text = entry.text
+            else:
+                metadata = entry.metadata
+                text = entry.get_content()
+
+            source = metadata.get("file_path", "unknown")
             if folder and not source.startswith(folder):
                 continue
+
             item = {
-                "score": round(node.score, 4),
+                "score": round(score, 4),
                 "source": source,
-                "text": node.text,
+                "text": text,
             }
-            start_line = node.metadata.get("start_line")
-            end_line = node.metadata.get("end_line")
+            start_line = metadata.get("start_line")
+            end_line = metadata.get("end_line")
             if start_line is not None:
                 item["start_line"] = start_line
             if end_line is not None:

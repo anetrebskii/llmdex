@@ -19,6 +19,8 @@ from llama_index.core.node_parser import (
 )
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 
+EMBED_MODEL_NAME = "all-MiniLM-L6-v2"
+
 SKIP_DIRS = {
     "node_modules",
     ".git",
@@ -123,7 +125,32 @@ def _log(msg):
     print(msg, flush=True)
 
 
-def parse_files(file_paths: list[str], embed_model, log=_log) -> list:
+def _enrich_node_text(node, root: Path | None = None) -> None:
+    """Prepend file/language context to node text for better embeddings."""
+    file_path = node.metadata.get("file_path", "")
+    ext = os.path.splitext(file_path)[1].lower()
+    language = PARSER_MAP.get(ext, "text")
+
+    # Use relative path if root is provided
+    if root and file_path:
+        try:
+            file_path = str(Path(file_path).relative_to(root))
+        except ValueError:
+            pass
+
+    parts = [f"file: {file_path}"]
+
+    if language == "markdown":
+        header = node.metadata.get("header_path")
+        if header:
+            parts.append(f"section: {header}")
+    else:
+        parts.append(f"language: {language}")
+
+    node.text = "# " + " | ".join(parts) + "\n" + node.text
+
+
+def parse_files(file_paths: list[str], embed_model, log=_log, root: Path | None = None) -> list:
     """Parse files into nodes using appropriate parsers. Returns list of nodes."""
     # Group files by parser type
     groups: dict[str, list[str]] = {}
@@ -203,6 +230,10 @@ def parse_files(file_paths: list[str], embed_model, log=_log) -> list:
             if node.end_char_idx is not None:
                 node.metadata["end_line"] = _char_to_line(node.end_char_idx)
 
+    # Enrich node text with file/language context for better embeddings
+    for node in all_nodes:
+        _enrich_node_text(node, root)
+
     return all_nodes
 
 
@@ -220,7 +251,7 @@ def build_index(
         extensions = (".md", ".ts", ".json")
 
     if embed_model is None:
-        log("Loading embedding model (all-MiniLM-L6-v2)...")
+        log(f"Loading embedding model ({EMBED_MODEL_NAME})...")
         if not verbose:
             # Suppress noisy HF/BERT/LlamaIndex logs
             for name in ("httpx", "sentence_transformers", "llama_index"):
@@ -231,7 +262,7 @@ def build_index(
             os.dup2(_devnull, 1)
             os.dup2(_devnull, 2)
         try:
-            embed_model = HuggingFaceEmbedding(model_name="all-MiniLM-L6-v2")
+            embed_model = HuggingFaceEmbedding(model_name=EMBED_MODEL_NAME)
             Settings.embed_model = embed_model
             Settings.llm = None
         finally:
@@ -261,7 +292,7 @@ def build_index(
     if not all_files:
         return {"files": 0, "nodes": 0, "elapsed": 0, "error": "No files found"}
 
-    all_nodes = parse_files(all_files, embed_model, log=log)
+    all_nodes = parse_files(all_files, embed_model, log=log, root=workspace)
     log(f"Total: {len(all_nodes)} nodes")
 
     log("Building vector index...")

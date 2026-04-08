@@ -12,6 +12,7 @@ dependencies = [
     "llama-index-readers-file",
     "llama-index-embeddings-huggingface",
     "tree-sitter-language-pack",
+    "rank-bm25",
 ]
 
 [tool.setuptools.packages.find]
