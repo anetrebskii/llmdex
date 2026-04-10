@@ -9,8 +9,10 @@ Local semantic search for your projects. No API keys, no cloud — everything ru
 > | | Without llmdex | With llmdex |
 > |---|---|---|
 > | Time | ~2 min | **~20 sec** |
+> | Cost (implementation task) | ~$1.20 | **~$0.50** |
+> | Cost (explanation task) | ~$0.25 | **~$0.10** |
 >
-> *Real benchmark with Claude Code on a production codebase.*
+> *Real benchmarks with Claude Code on a production codebase.*
 
 llmdex indexes your project files (Markdown, TypeScript, JSON) into a local vector database and lets you search by meaning, not just keywords.
 
@@ -264,6 +266,8 @@ llmdex init
 # Add globally to ~/.claude/CLAUDE.md — works in every project
 llmdex init global
 ```
+
+**Cost optimization:** llmdex reduces Claude Code API costs by 50-60% on typical tasks. Instead of scanning dozens of files to find relevant code, Claude gets precise results from llmdex and spends tokens on the actual work. The savings scale with codebase size -- larger projects see bigger gains.
 
 - **Project scope** (default) — instructions are tailored for single-project use
 - **Global scope** — instructions include cross-project features (tags, `-a` flag)
