@@ -128,6 +128,52 @@ def _log(msg):
     print(msg, flush=True)
 
 
+def _embed_cache_path(store: Path) -> Path:
+    return store / "embed_cache.json"
+
+
+def _load_embed_cache(store: Path) -> dict[str, list[float]]:
+    """Load {text_md5: embedding_vector} cache."""
+    cp = _embed_cache_path(store)
+    if not cp.exists():
+        return {}
+    try:
+        return json.loads(cp.read_text())
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def _save_embed_cache(store: Path, cache: dict[str, list[float]]):
+    _embed_cache_path(store).write_text(json.dumps(cache))
+
+
+def _text_hash(text: str) -> str:
+    import hashlib
+    return hashlib.md5(text.encode()).hexdigest()
+
+
+def _embed_with_cache(nodes: list, embed_model, cache: dict[str, list[float]], log=_log) -> None:
+    """Set node.embedding for all nodes, using cache where possible.
+    Computes missing embeddings in batch and updates the cache."""
+    to_embed = []
+    for node in nodes:
+        h = _text_hash(node.text)
+        if h in cache:
+            node.embedding = cache[h]
+        else:
+            to_embed.append(node)
+
+    if to_embed:
+        log(f"Embedding cache: {len(nodes) - len(to_embed)} cached, {len(to_embed)} to compute")
+        texts = [n.text for n in to_embed]
+        vectors = embed_model.get_text_embedding_batch(texts)
+        for node, vec in zip(to_embed, vectors):
+            node.embedding = vec
+            cache[_text_hash(node.text)] = vec
+    elif nodes:
+        log(f"Embedding cache: all {len(nodes)} cached, 0 to compute")
+
+
 def _manifest_path(store: Path) -> Path:
     return store / "file_manifest.json"
 
@@ -389,6 +435,8 @@ def build_index(
     if embed_model is None:
         embed_model = _load_embed_model(verbose, log)
 
+    embed_cache = _load_embed_cache(out)
+
     if has_existing_index and (len(files_to_parse) + len(deleted_files)) < len(all_files):
         # Incremental update
         log(f"Incremental update: {len(new_files)} new, {len(changed_files)} changed, {len(deleted_files)} deleted")
@@ -405,6 +453,7 @@ def build_index(
         # Parse and insert new/changed files
         if files_to_parse:
             new_nodes = parse_files(files_to_parse, embed_model, log=log, root=workspace)
+            _embed_with_cache(new_nodes, embed_model, embed_cache, log)
             log(f"Inserting {len(new_nodes)} nodes...")
             index.insert_nodes(new_nodes)
         else:
@@ -414,6 +463,7 @@ def build_index(
         index.storage_context.persist(persist_dir=str(out))
 
         _save_manifest(out, _build_manifest(all_files))
+        _save_embed_cache(out, embed_cache)
         elapsed = time.time() - start
         log(
             f"\nDone! Updated {len(files_to_parse)} files ({len(new_nodes)} nodes) in {elapsed:.1f}s"
@@ -425,6 +475,8 @@ def build_index(
         all_nodes = parse_files(all_files, embed_model, log=log, root=workspace)
         log(f"Total: {len(all_nodes)} nodes")
 
+        _embed_with_cache(all_nodes, embed_model, embed_cache, log)
+
         log("Building vector index...")
         index = VectorStoreIndex(all_nodes, embed_model=embed_model)
 
@@ -433,6 +485,7 @@ def build_index(
         index.storage_context.persist(persist_dir=str(out))
 
         _save_manifest(out, _build_manifest(all_files))
+        _save_embed_cache(out, embed_cache)
         elapsed = time.time() - start
         log(
             f"\nDone! Indexed {len(all_files)} files ({len(all_nodes)} nodes) in {elapsed:.1f}s"
