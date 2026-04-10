@@ -7,9 +7,7 @@ line counts. Each chunk is a semantic unit (one function, one class, etc.).
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
-from pathlib import Path
 
 from tree_sitter_language_pack import get_parser
 
@@ -230,8 +228,6 @@ def chunk_file(file_path: str, language: str) -> list[Chunk]:
     chunks: list[Chunk] = []
     preamble_lines: list[str] = []
     preamble_start: int | None = None
-    last_chunk_end_row = -1
-
     for child in root.children:
         child_start = child.start_point.row
         child_end = child.end_point.row
@@ -254,7 +250,6 @@ def chunk_file(file_path: str, language: str) -> list[Chunk]:
                 text = child.text.decode("utf-8", errors="replace")
                 chunks.append(Chunk(text, child_start + 1, child_end + 1, _node_name(child, language)))
 
-            last_chunk_end_row = child_end
         else:
             # Accumulate into preamble (imports, constants, comments)
             if preamble_start is None:
