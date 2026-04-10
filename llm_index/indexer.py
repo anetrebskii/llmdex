@@ -17,9 +17,9 @@ from llama_index.core import (
 )
 from llama_index.core.node_parser import (
     MarkdownNodeParser,
-    CodeSplitter,
     SentenceSplitter,
 )
+from llama_index.core.schema import TextNode
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 
 EMBED_MODEL_NAME = "BAAI/bge-small-en-v1.5"
@@ -200,6 +200,8 @@ def _enrich_node_text(node, root: Path | None = None) -> None:
         header = node.metadata.get("header_path")
         if header:
             parts.append(f"section: {header}")
+    elif node.metadata.get("symbol"):
+        parts.append(f"symbol: {node.metadata['symbol']}")
     else:
         parts.append(f"language: {language}")
 
@@ -227,18 +229,32 @@ def parse_files(file_paths: list[str], embed_model, log=_log, root: Path | None 
             all_nodes.extend(nodes)
 
         elif parser_type in CODE_LANGUAGES:
-            code_parser = CodeSplitter(
-                language=parser_type, chunk_lines=40, chunk_lines_overlap=10
-            )
+            from llm_index.ast_chunker import chunk_file
+
             skipped = 0
-            for doc in docs:
-                try:
-                    nodes = code_parser.get_nodes_from_documents([doc])
-                    all_nodes.extend(nodes)
-                except ValueError:
-                    nodes = fallback_parser.get_nodes_from_documents([doc])
+            for fp in paths:
+                chunks = chunk_file(fp, parser_type)
+                if not chunks:
+                    # Fallback: load via SimpleDirectoryReader + sentence splitter
+                    doc = SimpleDirectoryReader(input_files=[fp]).load_data()
+                    nodes = fallback_parser.get_nodes_from_documents(doc)
                     all_nodes.extend(nodes)
                     skipped += 1
+                    continue
+                for chunk in chunks:
+                    node = TextNode(
+                        text=chunk.text,
+                        metadata={
+                            "file_path": fp,
+                            "file_name": os.path.basename(fp),
+                            "start_line": chunk.start_line,
+                            "end_line": chunk.end_line,
+                            "symbol": chunk.symbol,
+                        },
+                    )
+                    node.excluded_embed_metadata_keys = ["file_path", "file_name", "start_line", "end_line", "symbol"]
+                    node.excluded_llm_metadata_keys = ["file_path", "file_name", "start_line", "end_line", "symbol"]
+                    all_nodes.append(node)
             if skipped:
                 log(f"  -> {skipped} files used fallback parser")
 
@@ -246,7 +262,7 @@ def parse_files(file_paths: list[str], embed_model, log=_log, root: Path | None 
             nodes = fallback_parser.get_nodes_from_documents(docs)
             all_nodes.extend(nodes)
 
-        log(f"  -> {len(nodes) if parser_type != 'markdown' else len(all_nodes)} nodes")
+        log(f"  -> {len(all_nodes)} total nodes")
 
     # Compute line numbers for each node from character offsets
     # Group nodes by file to avoid re-reading the same file
