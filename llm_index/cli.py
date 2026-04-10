@@ -79,7 +79,7 @@ def cmd_reindex(args):
 
         extensions = tuple(meta.get("extensions", [".md", ".ts", ".json"]))
         print(f"--- {directory} ({', '.join(extensions)}) ---")
-        result = build_index(workspace, extensions, verbose=args.verbose)
+        result = build_index(workspace, extensions, verbose=args.verbose, force=args.force)
         if result.get("error"):
             print(f"  Error: {result['error']}")
         print()
@@ -417,6 +417,12 @@ def main():
         "--verbose",
         action="store_true",
         help="Show individual file paths",
+    )
+    p_reindex.add_argument(
+        "-f",
+        "--force",
+        action="store_true",
+        help="Force full rebuild, ignoring change detection",
     )
 
     # llmdex list / ls

@@ -340,6 +340,7 @@ def build_index(
     embed_model=None,
     log=_log,
     verbose: bool = False,
+    force: bool = False,
 ) -> dict:
     """Build vector index for a workspace. Returns stats dict."""
     start = time.time()
@@ -367,7 +368,7 @@ def build_index(
         return {"files": 0, "nodes": 0, "elapsed": 0, "error": "No files found"}
 
     out = storage_dir(workspace)
-    old_manifest = _load_manifest(out)
+    old_manifest = {} if force else _load_manifest(out)
     new_files, changed_files, deleted_files = _diff_files(all_files, old_manifest)
     files_to_parse = new_files + changed_files
 
