@@ -459,7 +459,7 @@ def _build_index_split(
             sub, extensions, embed_model, log, verbose, force, root_only=False
         )
         if result.get("error") or result.get("files", 0) == 0:
-            log(f"  skipped (no matching files)")
+            log("  skipped (no matching files)")
             continue
 
         child_tags = list(parent_tags or []) + [f"folder:{sub.name}"]
