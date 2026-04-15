@@ -96,15 +96,27 @@ def _git_ignored_files(root: Path, files: list[str]) -> set[str]:
         return set()
 
 
-def collect_files(root: Path, extensions: tuple[str, ...]) -> tuple[list[str], int]:
+def collect_files(
+    root: Path, extensions: tuple[str, ...], root_only: bool = False
+) -> tuple[list[str], int]:
     """Collect files matching extensions, skipping ignored directories and gitignored files.
+    If root_only, only files directly under root (no subdirectories).
     Returns (files, gitignored_count)."""
     files = []
-    for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
-        for f in filenames:
-            if f.endswith(extensions):
-                files.append(os.path.join(dirpath, f))
+    if root_only:
+        try:
+            for name in os.listdir(root):
+                fp = os.path.join(root, name)
+                if os.path.isfile(fp) and name.endswith(extensions):
+                    files.append(fp)
+        except OSError:
+            pass
+    else:
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
+            for f in filenames:
+                if f.endswith(extensions):
+                    files.append(os.path.join(dirpath, f))
 
     ignored = _git_ignored_files(root, files)
     if ignored:
@@ -387,14 +399,94 @@ def build_index(
     log=_log,
     verbose: bool = False,
     force: bool = False,
+    split: bool = False,
+    parent_tags: list[str] | None = None,
 ) -> dict:
-    """Build vector index for a workspace. Returns stats dict."""
-    start = time.time()
+    """Build vector index for a workspace. Returns stats dict.
 
+    If split=True, also indexes each immediate subfolder as a separate child index
+    tagged with folder:<name>. parent_tags is inherited by children."""
     if extensions is None:
         extensions = (".md", ".ts", ".json")
 
-    all_files, gitignored = collect_files(workspace, extensions)
+    if split:
+        return _build_index_split(
+            workspace, extensions, embed_model, log, verbose, force, parent_tags
+        )
+
+    return _build_index_single(
+        workspace, extensions, embed_model, log, verbose, force, root_only=False
+    )
+
+
+def _build_index_split(
+    workspace: Path,
+    extensions: tuple[str, ...],
+    embed_model,
+    log,
+    verbose: bool,
+    force: bool,
+    parent_tags: list[str] | None,
+) -> dict:
+    from llm_index.registry import register, set_tags, get_entry
+
+    if embed_model is None:
+        embed_model = _load_embed_model(verbose, log)
+
+    log(f"=== Root (root-level files only): {workspace} ===")
+    root_result = _build_index_single(
+        workspace, extensions, embed_model, log, verbose, force, root_only=True
+    )
+
+    # Discover immediate subfolders
+    subfolders: list[Path] = []
+    try:
+        for name in sorted(os.listdir(workspace)):
+            sub = workspace / name
+            if sub.is_dir() and name not in SKIP_DIRS:
+                subfolders.append(sub)
+    except OSError:
+        pass
+
+    children: list[str] = []
+    for sub in subfolders:
+        log(f"\n=== Subfolder: {sub} ===")
+        existing = get_entry(str(sub))
+        if existing is not None:
+            log(f"  note: {sub} was already indexed independently -- overwriting")
+
+        result = _build_index_single(
+            sub, extensions, embed_model, log, verbose, force, root_only=False
+        )
+        if result.get("error") or result.get("files", 0) == 0:
+            log(f"  skipped (no matching files)")
+            continue
+
+        child_tags = list(parent_tags or []) + [f"folder:{sub.name}"]
+        set_tags(str(sub), child_tags)
+        children.append(str(sub))
+
+    # Update parent registry entry with children list and split flag
+    register(str(workspace), list(extensions), children=children, split=True)
+    if parent_tags:
+        set_tags(str(workspace), parent_tags)
+
+    return {**root_result, "children": children, "split": True}
+
+
+def _build_index_single(
+    workspace: Path,
+    extensions: tuple[str, ...],
+    embed_model,
+    log,
+    verbose: bool,
+    force: bool,
+    root_only: bool,
+) -> dict:
+    """Build a single vector index (no splitting). Returns stats dict."""
+    start = time.time()
+
+    all_files, gitignored = collect_files(workspace, extensions, root_only=root_only)
 
     # Show per-extension counts
     ext_counts: dict[str, int] = {}

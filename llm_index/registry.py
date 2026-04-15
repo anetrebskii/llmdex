@@ -26,31 +26,48 @@ def _save(data: dict[str, dict]):
     REGISTRY_FILE.write_text(json.dumps(data, indent=2))
 
 
-def register(directory: str, extensions: list[str]):
+def register(
+    directory: str,
+    extensions: list[str],
+    children: list[str] | None = None,
+    split: bool | None = None,
+):
     """Add or update a folder in the registry."""
     data = _load()
-    existing_tags = data.get(directory, {}).get("tags", [])
-    data[directory] = {
+    existing = data.get(directory, {})
+    entry = {
         "extensions": extensions,
         "indexed_at": datetime.now(timezone.utc).isoformat(),
-        "tags": existing_tags,
+        "tags": existing.get("tags", []),
         "embed_model": EMBED_MODEL_NAME,
     }
+    if children is not None:
+        entry["children"] = children
+    elif "children" in existing:
+        entry["children"] = existing["children"]
+    if split is not None:
+        entry["split"] = split
+    elif "split" in existing:
+        entry["split"] = existing["split"]
+    data[directory] = entry
     _save(data)
 
 
 def unregister(directory: str) -> bool:
-    """Remove a folder from the registry and delete its index data. Returns True if found."""
+    """Remove a folder from the registry and delete its index data. Cascades to children. Returns True if found."""
     data = _load()
     if directory not in data:
         return False
 
-    # Delete index storage
-    store = storage_dir(Path(directory))
-    if store.exists():
-        shutil.rmtree(store)
+    to_remove = [directory]
+    to_remove.extend(data[directory].get("children", []))
 
-    del data[directory]
+    for d in to_remove:
+        store = storage_dir(Path(d))
+        if store.exists():
+            shutil.rmtree(store)
+        data.pop(d, None)
+
     _save(data)
     return True
 

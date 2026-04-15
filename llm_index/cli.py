@@ -25,7 +25,15 @@ def cmd_index(args):
 
     print(f"Indexing: {workspace}")
     print(f"Extensions: {', '.join(extensions)}")
-    result = build_index(workspace, extensions, verbose=args.verbose)
+    if args.split:
+        print("Mode: split (root + each immediate subfolder as separate index)")
+    result = build_index(
+        workspace,
+        extensions,
+        verbose=args.verbose,
+        split=args.split,
+        parent_tags=args.tag,
+    )
 
     if result.get("error"):
         print(result["error"])
@@ -34,6 +42,11 @@ def cmd_index(args):
     if args.tag:
         set_tags(str(workspace), args.tag)
         print(f"Tags: {', '.join(sorted(set(args.tag)))}")
+
+    if result.get("children"):
+        print(f"Children indexes ({len(result['children'])}):")
+        for c in result["children"]:
+            print(f"  - {c}")
 
     # Ensure llmdex.md is present in the project's .claude/ directory
     _ensure_llmdex_md(workspace / ".claude")
@@ -70,16 +83,33 @@ def cmd_reindex(args):
         print("No indexed folders found. Run: llmdex index <directory>")
         return
 
-    print(f"Re-indexing {len(entries)} folder(s)...\n")
-    for directory, meta in entries.items():
+    # Skip children of split parents -- parent reindex handles them.
+    child_of_parent: set[str] = set()
+    for meta in entries.values():
+        for c in meta.get("children", []):
+            child_of_parent.add(c)
+
+    to_reindex = [(d, m) for d, m in entries.items() if d not in child_of_parent]
+
+    print(f"Re-indexing {len(to_reindex)} folder(s)...\n")
+    for directory, meta in to_reindex:
         workspace = Path(directory)
         if not workspace.is_dir():
             print(f"Skipping (not found): {directory}")
             continue
 
         extensions = tuple(meta.get("extensions", [".md", ".ts", ".json"]))
-        print(f"--- {directory} ({', '.join(extensions)}) ---")
-        result = build_index(workspace, extensions, verbose=args.verbose, force=args.force)
+        split = bool(meta.get("split"))
+        parent_tags = meta.get("tags", []) if split else None
+        print(f"--- {directory} ({', '.join(extensions)}){' [split]' if split else ''} ---")
+        result = build_index(
+            workspace,
+            extensions,
+            verbose=args.verbose,
+            force=args.force,
+            split=split,
+            parent_tags=parent_tags,
+        )
         if result.get("error"):
             print(f"  Error: {result['error']}")
         print()
@@ -210,59 +240,131 @@ def cmd_tags(args):
 
 
 LLMDEX_MD_CONTENT = """\
-# LLMDEX -- Semantic Code Search
+---
+name: llmdex-search
+description: Semantic code/docs search across all indexed projects. Use this skill whenever the user asks to find, explain, or locate something ("where is X", "how does Y work", "find notes about Z", "what did we decide about W"). ALWAYS starts with tag discovery before searching -- do not assume the answer lives only in the current directory.
+---
 
-You have access to `llmdex` -- a local semantic search tool that indexes project codebases.
-Results include full source code with line numbers -- treat them as equivalent to Read tool output. Do NOT re-read files that llmdex already returned.
+# LLMDEX -- Semantic Search Skill
 
-## When to use
+`llmdex` is a local semantic search tool that indexes many projects and doc folders on this machine. Results are chunks of actual source code / markdown with file paths and line numbers.
 
-**Default to llmdex for all code search tasks.** Only fall back to Grep for exact string matches (function name, error message, import path).
+## Core rule: search tags first, don't index
 
-- "where is X handled?" / "how does X work?" / "find code related to X" -- always llmdex.
-- "find all usages of `functionName`" / "which files import X" -- Grep is fine.
+When the user asks you to find something, the answer is probably already indexed -- just not in the current working directory. **Never respond "not indexed, let me index it" without first checking what IS indexed.**
+
+The default loop is:
+
+1. **Run `llmdex tags`** to see every tag (projects, layers, doc sets, `folder:*` subfolders).
+2. **READ THE OUTPUT.** Look at the directories listed under each tag to understand what each tag actually contains. `folder:meetings` under `/twinsai/meetings` means "twinsai meeting notes".
+3. **Pick the MOST SPECIFIC tag combination** that matches the user's intent -- not just one tag. Combine `project:*` + `folder:*` + `type:*` whenever the user's question points at a specific area.
+4. **Query with `-t <tag> -t <tag>`** (AND logic narrows to the intersection).
+5. **Only if that returns nothing useful**, broaden: drop a tag, try a sibling tag, and only then `-a`.
+6. **Last resort**: say "nothing indexed matches". Do NOT auto-index.
+
+### Worked example
+
+User: "Что сказал Дмитрий на последнем звонке? В twinsai"
+
+Wrong: `llmdex query "..."` in cwd → fails → jump to `-a` with a broad query.
+
+Right:
+1. `llmdex tags` -- see `folder:meetings` listed under `/twinsai/meetings`, and `project:twinsai` covering the twinsai workspace.
+2. Combine them: `llmdex query -t project:twinsai -t folder:meetings "Дмитрий последний звонок"`.
+3. That's the narrowest, most relevant slice -- use it first.
+
+The general pattern: user mentions a project/domain + a content type (meetings, notes, slack, tasks, etc.) -> there is almost always a `project:<name>` + `folder:<type>` combo that hits exactly that slice. Find it in `llmdex tags` output before querying.
+
+Do NOT run `llmdex index` on a new directory just because `llmdex query` in the current folder failed. Indexing is a user-initiated setup step, not a recovery step.
+
+## When to use this skill
+
+Trigger whenever the user's request sounds like retrieval or recall:
+
+- "where is X handled?" / "how does Y work?" / "find code related to Z"
+- "what did we write about ...", "find my notes on ...", "was there a doc about ..."
+- "which project uses X?", "do we have an example of Y anywhere?"
+- Any question about past decisions, meetings, specs, or prior work.
+
+## llmdex vs Grep
+
+Prefer `llmdex` over Grep in almost every case. Grep returns raw line hits with no ranking and no semantic grouping -- on anything non-trivial it floods you with matches.
+
+Use **Grep** only when ALL of these are true:
+- You are searching for an exact literal string (function name, error message, import path, constant).
+- You expect at most ~5 hits total.
+- You do not need surrounding code context.
+
+If Grep would (or does) return more than ~5 results, **stop and switch to `llmdex query`** -- it ranks, groups, and returns actual code chunks with line numbers. The same applies if the user's question is conceptual rather than a literal-string lookup ("how does auth work", "where do we configure X") -- always llmdex, never Grep.
+
+Rule of thumb: if you find yourself piping grep output to head, grepping again to narrow, or skimming dozens of matches -- you should have used llmdex.
 
 ## How to use results
 
-llmdex returns chunks of actual source code with file paths and line numbers. This is your primary context -- act on it directly:
+llmdex returns code/doc chunks with `file:start-end` locations. Treat them as equivalent to Read tool output.
 
-- **DO NOT** call Read on files that llmdex already returned. The chunk IS the content.
+- **DO NOT** call Read on files that llmdex already returned -- the chunk IS the content.
 - **DO NOT** follow up with Grep/Glob to "verify" llmdex results. Trust them.
-- **DO** use the file:line info to Edit directly if you need to modify the code.
+- **DO** use `file:line` info to Edit directly if the user asks for changes.
 - **ONLY** call Read if you need lines outside the returned chunk range.
 
-## Commands
+## Command reference
 
 ```bash
-# Search current project
-llmdex query "your question"
-
-# Search by tag (recommended for cross-project)
-llmdex query -t <tag> "your question"
-
-# Combine tags (AND logic)
-llmdex query -t backend -t api "your question"
-
-# Search ALL indexed projects (use sparingly)
-llmdex query -a "your question"
-
-# Discover available tags -- run this first when unsure
+# 1. ALWAYS start here if you're unsure what's available
 llmdex tags
 
-# More results (default: 10)
+# Search by a single tag
+llmdex query -t <tag> "your question"
+
+# Combine tags (AND logic) -- e.g. project + doc type, or project + subfolder
+llmdex query -t project:twinsai -t type:docs "onboarding process"
+llmdex query -t project:formula -t folder:meetings "last retro"
+
+# Narrow to one subfolder of a split-indexed project
+llmdex query -t <project-tag> -t folder:<subfolder> "your question"
+
+# Search across ALL indexes (use only after tag-based search)
+llmdex query -a "your question"
+
+# Search the current project (only when you're sure it's relevant)
+llmdex query "your question"
+
+# Post-retrieval path-prefix filter (works on any index, less efficient than folder: tags)
+llmdex query -f src/api "your question"
+
+# Bigger result set (default 10)
 llmdex query -k 20 "your question"
 
-# Compact mode -- file:lines only, no code preview
+# Compact output -- file:lines only, no preview (for chaining / quick scan)
 llmdex query -c "your question"
 ```
 
-## Rules
+## Tag patterns you will typically see
 
-- `llmdex query` errors if the current directory is not indexed. Fall back to Grep/Glob.
+- `project:<name>` -- one per project/doc set.
+- `project-type:job` / `project-type:mine` -- work vs personal.
+- `type:code` / `type:docs` -- source code vs notes/markdown.
+- `layer:app` / `layer:infra` -- role within a project.
+- `folder:<name>` -- immediate subfolder of a project indexed with `--split`.
+
+Combine them. "Find meeting notes from the formula project" -> `-t project:formula -t folder:meetings` or `-t project:formula -t type:docs`.
+
+## Decision checklist before answering a retrieval question
+
+- [ ] Did I run `llmdex tags` (or do I already know the relevant tag from this session)?
+- [ ] Did I pick the most specific tag combo, not just the current directory?
+- [ ] Did I try `-a` only after tag-based search returned nothing useful?
+- [ ] Am I resisting the urge to run `llmdex index` just because a query was empty?
+
+If all four are checked and there are still no results, report "nothing indexed matches" -- don't auto-index.
+
+## Other rules
+
+- Results use hybrid search (BM25 + vector): exact keyword matches and semantic matches both surface.
+- `llmdex query` with no `-t`/`-a`/`-d` errors if the current directory is not indexed. That is a signal to pick a tag, not to index.
 - User says "everywhere" / "across all projects" -- use `-a`.
-- User mentions a domain/project/layer ("in the backend", "in docs") -- run `llmdex tags` first, then `-t <tag>`.
-- Prefer `-t <tag>` over `-a` -- more relevant, faster.
-- Results use hybrid search (BM25 + vector), so both exact keyword matches and semantic matches are returned.
+- Prefer `-t <tag>` over `-a` -- more relevant, faster, less noisy.
 """
 
 INTEGRATE_REFERENCE = "@llmdex.md\n"
@@ -389,6 +491,11 @@ def main():
         "--verbose",
         action="store_true",
         help="Show individual file paths",
+    )
+    p_index.add_argument(
+        "--split",
+        action="store_true",
+        help="Also index each immediate subfolder as a separate child index (tagged folder:<name>)",
     )
 
     # llmdex add
