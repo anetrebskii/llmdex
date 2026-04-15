@@ -34,7 +34,11 @@ llmdex query -t backend -t api "your question"
 # Search ALL indexed projects (use sparingly)
 llmdex query -a "your question"
 
-# Discover available tags -- run this first when unsure
+# Discover indexes -- run this first when unsure.
+# Lists each indexed folder with its tags AND a human description of what's inside.
+llmdex catalog
+
+# Lists just the tags (no descriptions) -- use only to confirm a tag spelling.
 llmdex tags
 
 # More results (default: 10)
@@ -48,6 +52,6 @@ llmdex query -c "your question"
 
 - `llmdex query` errors if the current directory is not indexed. Fall back to Grep/Glob.
 - User says "everywhere" / "across all projects" -- use `-a`.
-- User mentions a domain/project/layer ("in the backend", "in docs") -- run `llmdex tags` first, then `-t <tag>`.
+- User mentions a domain/project/layer ("in the backend", "in docs") -- run `llmdex catalog` first, then `-t <tag>`.
 - Prefer `-t <tag>` over `-a` -- more relevant, faster.
 - Results use hybrid search (BM25 + vector), so both exact keyword matches and semantic matches are returned.

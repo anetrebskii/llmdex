@@ -12,7 +12,7 @@ sys.stderr.reconfigure(line_buffering=True)
 def cmd_index(args):
     from pathlib import Path
     from llm_index.indexer import build_index
-    from llm_index.registry import set_tags
+    from llm_index.registry import set_tags, set_description
 
     workspace = Path(args.directory).resolve()
     if not workspace.is_dir():
@@ -43,6 +43,10 @@ def cmd_index(args):
         set_tags(str(workspace), args.tag)
         print(f"Tags: {', '.join(sorted(set(args.tag)))}")
 
+    if args.description:
+        set_description(str(workspace), args.description)
+        print(f"Description: {args.description}")
+
     if result.get("children"):
         print(f"Children indexes ({len(result['children'])}):")
         for c in result["children"]:
@@ -62,13 +66,15 @@ def cmd_add(args):
         sys.exit(1)
 
     extensions = [ext if ext.startswith(".") else f".{ext}" for ext in args.extensions]
-    register(str(workspace), extensions)
+    register(str(workspace), extensions, description=args.description)
 
     if args.tag:
         set_tags(str(workspace), args.tag)
 
     tags_str = f" (tags: {', '.join(args.tag)})" if args.tag else ""
     print(f"Registered: {workspace}{tags_str}")
+    if args.description:
+        print(f"  description: {args.description}")
     print(f"  extensions: {', '.join(extensions)}")
     print("Run `llmdex reindex` to build the index.")
 
@@ -132,10 +138,13 @@ def cmd_list(args):
         status = "ok" if exists else "missing index"
         indexed_at = meta.get("indexed_at", "unknown")
         tags = meta.get("tags", [])
+        description = meta.get("description", "")
         print(f"  {directory}")
         print(f"    extensions: {extensions}")
         if tags:
             print(f"    tags: {', '.join(tags)}")
+        if description:
+            print(f"    description: {description}")
         print(f"    indexed at: {indexed_at}")
         print(f"    status: {status}")
         print()
@@ -223,6 +232,72 @@ def cmd_tag(args):
         sys.exit(1)
 
 
+def cmd_describe(args):
+    from pathlib import Path
+    from llm_index.registry import get_entry, set_description
+
+    directory = str(Path(args.directory).resolve())
+    entry = get_entry(directory)
+    if entry is None:
+        print(f"Error: '{directory}' is not indexed.")
+        sys.exit(1)
+
+    if not args.text:
+        current = entry.get("description", "")
+        if current:
+            print(f"Description for {directory}: {current}")
+        else:
+            print(f"No description for {directory}")
+        return
+
+    text = " ".join(args.text)
+    if set_description(directory, text):
+        print(f"Description set for {directory}: {text}")
+    else:
+        print(f"Error: '{directory}' is not indexed.")
+        sys.exit(1)
+
+
+def cmd_catalog(args):
+    from llm_index.registry import list_registered
+
+    entries = list_registered()
+    if not entries:
+        print("No indexed folders. Use: llmdex index <directory>")
+        return
+
+    # Skip children of split parents -- they share the parent context.
+    child_of_parent: set[str] = set()
+    for meta in entries.values():
+        for c in meta.get("children", []):
+            child_of_parent.add(c)
+
+    for directory, meta in entries.items():
+        if directory in child_of_parent:
+            continue
+        tags = meta.get("tags", [])
+        description = meta.get("description", "")
+        children = meta.get("children", [])
+        print(directory)
+        if tags:
+            print(f"  tags: {', '.join(tags)}")
+        if description:
+            print(f"  description: {description}")
+        if children:
+            print(f"  subfolders ({len(children)}):")
+            for c in children:
+                cmeta = entries.get(c, {})
+                ctags = [t for t in cmeta.get("tags", []) if t.startswith("folder:")]
+                cdesc = cmeta.get("description", "")
+                line = f"    {c}"
+                if ctags:
+                    line += f"  [{', '.join(ctags)}]"
+                print(line)
+                if cdesc:
+                    print(f"      description: {cdesc}")
+        print()
+
+
 def cmd_tags(args):
     from llm_index.registry import list_all_tags
 
@@ -249,18 +324,20 @@ description: Semantic code/docs search across all indexed projects. Use this ski
 
 `llmdex` is a local semantic search tool that indexes many projects and doc folders on this machine. Results are chunks of actual source code / markdown with file paths and line numbers.
 
-## Core rule: search tags first, don't index
+## Core rule: check the catalog first, don't index
 
 When the user asks you to find something, the answer is probably already indexed -- just not in the current working directory. **Never respond "not indexed, let me index it" without first checking what IS indexed.**
 
 The default loop is:
 
-1. **Run `llmdex tags`** to see every tag (projects, layers, doc sets, `folder:*` subfolders).
-2. **READ THE OUTPUT.** Look at the directories listed under each tag to understand what each tag actually contains. `folder:meetings` under `/twinsai/meetings` means "twinsai meeting notes".
+1. **Run `llmdex catalog`** to see every indexed project with its tags AND a human-written description of what lives there. The description tells you what the index is *for* -- use it to match the user's intent to the right index.
+2. **READ THE OUTPUT CAREFULLY.** Match on description first (semantic), then on tags (structural). `folder:meetings` under `/twinsai/meetings` with description "Weekly syncs and retros" means that's where meeting notes live.
 3. **Pick the MOST SPECIFIC tag combination** that matches the user's intent -- not just one tag. Combine `project:*` + `folder:*` + `type:*` whenever the user's question points at a specific area.
 4. **Query with `-t <tag> -t <tag>`** (AND logic narrows to the intersection).
 5. **Only if that returns nothing useful**, broaden: drop a tag, try a sibling tag, and only then `-a`.
 6. **Last resort**: say "nothing indexed matches". Do NOT auto-index.
+
+`llmdex tags` still exists and just lists tags with no descriptions -- use it only if you already know what you want and just need to confirm a tag spelling. For discovery, always prefer `llmdex catalog`.
 
 ### Worked example
 
@@ -269,11 +346,11 @@ User: "Что сказал Дмитрий на последнем звонке? 
 Wrong: `llmdex query "..."` in cwd → fails → jump to `-a` with a broad query.
 
 Right:
-1. `llmdex tags` -- see `folder:meetings` listed under `/twinsai/meetings`, and `project:twinsai` covering the twinsai workspace.
-2. Combine them: `llmdex query -t project:twinsai -t folder:meetings "Дмитрий последний звонок"`.
+1. `llmdex catalog` -- find the twinsai entry; its description mentions meeting notes, and a subfolder is tagged `folder:meetings`.
+2. Combine tags: `llmdex query -t project:twinsai -t folder:meetings "Дмитрий последний звонок"`.
 3. That's the narrowest, most relevant slice -- use it first.
 
-The general pattern: user mentions a project/domain + a content type (meetings, notes, slack, tasks, etc.) -> there is almost always a `project:<name>` + `folder:<type>` combo that hits exactly that slice. Find it in `llmdex tags` output before querying.
+The general pattern: user mentions a project/domain + a content type (meetings, notes, slack, tasks, etc.) -> the catalog description + tags together point at the right slice. Read the catalog before querying.
 
 Do NOT run `llmdex index` on a new directory just because `llmdex query` in the current folder failed. Indexing is a user-initiated setup step, not a recovery step.
 
@@ -312,6 +389,10 @@ llmdex returns code/doc chunks with `file:start-end` locations. Treat them as eq
 
 ```bash
 # 1. ALWAYS start here if you're unsure what's available
+# Shows each indexed folder with its tags AND a human description of what's inside.
+llmdex catalog
+
+# Lists just the tags (no descriptions) -- use only to confirm a tag spelling you already know.
 llmdex tags
 
 # Search by a single tag
@@ -352,7 +433,7 @@ Combine them. "Find meeting notes from the formula project" -> `-t project:formu
 
 ## Decision checklist before answering a retrieval question
 
-- [ ] Did I run `llmdex tags` (or do I already know the relevant tag from this session)?
+- [ ] Did I run `llmdex catalog` (or do I already know the relevant index from this session)?
 - [ ] Did I pick the most specific tag combo, not just the current directory?
 - [ ] Did I try `-a` only after tag-based search returned nothing useful?
 - [ ] Am I resisting the urge to run `llmdex index` just because a query was empty?
@@ -493,6 +574,11 @@ def main():
         help="Show individual file paths",
     )
     p_index.add_argument(
+        "-D",
+        "--description",
+        help="Human-readable description of what's in this index (shown in `llmdex catalog`)",
+    )
+    p_index.add_argument(
         "--split",
         action="store_true",
         help="Also index each immediate subfolder as a separate child index (tagged folder:<name>)",
@@ -515,6 +601,11 @@ def main():
         "--tag",
         action="append",
         help="Tag to assign (can be repeated, e.g. -t project:foo -t type:code)",
+    )
+    p_add.add_argument(
+        "-D",
+        "--description",
+        help="Human-readable description of what's in this index (shown in `llmdex catalog`)",
     )
 
     # llmdex reindex / re
@@ -580,6 +671,23 @@ def main():
     # llmdex tags
     sub.add_parser("tags", help="List all tags and their indexes")
 
+    # llmdex describe
+    p_describe = sub.add_parser(
+        "describe",
+        help="Set or show description for an indexed project",
+    )
+    p_describe.add_argument(
+        "directory", nargs="?", default=".", help="Project directory (default: .)"
+    )
+    p_describe.add_argument("text", nargs="*", help="Description text (omit to show current)")
+
+    # llmdex catalog
+    sub.add_parser(
+        "catalog",
+        aliases=["cat"],
+        help="List all indexed projects with tags and descriptions (use for discovery)",
+    )
+
     # llmdex server / srv
     p_server = sub.add_parser("server", aliases=["s"], help="Manage the background server")
     p_server.add_argument(
@@ -632,6 +740,9 @@ def main():
         "q": cmd_query,
         "tag": cmd_tag,
         "tags": cmd_tags,
+        "describe": cmd_describe,
+        "catalog": cmd_catalog,
+        "cat": cmd_catalog,
         "server": cmd_server,
         "s": cmd_server,
         "init": cmd_init,

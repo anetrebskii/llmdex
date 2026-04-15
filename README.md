@@ -208,6 +208,45 @@ llmdex tag /path/to/project
 
 Tags replace any previously set tags (they are not additive).
 
+### `llmdex describe` — Set or show an index description
+
+Attach a human-readable description to an indexed folder. Descriptions show up in `llmdex catalog` and help Claude (or you) pick the right index for a given question.
+
+```bash
+# Set a description
+llmdex describe /path/to/project Meeting notes and retros for the twinsai team
+
+# Show current description
+llmdex describe /path/to/project
+```
+
+You can also pass `-D` / `--description` when indexing or adding:
+
+```bash
+llmdex index . -t project:twinsai -D "Engineering docs and ADRs"
+llmdex add .  -t project:twinsai -D "Engineering docs and ADRs"
+```
+
+### `llmdex catalog` — List all indexed projects with tags and descriptions
+
+Use this for discovery: it shows every indexed folder together with its tags and description, so you can decide which index to query.
+
+```bash
+llmdex catalog
+```
+
+Output:
+
+```text
+/Users/you/twinsai
+  tags: project:twinsai, type:docs
+  description: Weekly syncs, retros, and ADRs
+  subfolders (2):
+    /Users/you/twinsai/meetings  [folder:meetings]
+      description: Raw meeting notes
+    /Users/you/twinsai/adrs  [folder:adrs]
+```
+
 ### `llmdex tags` — List all tags
 
 Shows all tags and which indexed directories have each tag.

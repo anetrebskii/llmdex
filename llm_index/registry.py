@@ -31,6 +31,7 @@ def register(
     extensions: list[str],
     children: list[str] | None = None,
     split: bool | None = None,
+    description: str | None = None,
 ):
     """Add or update a folder in the registry."""
     data = _load()
@@ -49,6 +50,10 @@ def register(
         entry["split"] = split
     elif "split" in existing:
         entry["split"] = existing["split"]
+    if description is not None:
+        entry["description"] = description
+    elif "description" in existing:
+        entry["description"] = existing["description"]
     data[directory] = entry
     _save(data)
 
@@ -88,6 +93,16 @@ def set_tags(directory: str, tags: list[str]):
     if directory not in data:
         return False
     data[directory]["tags"] = sorted(set(tags))
+    _save(data)
+    return True
+
+
+def set_description(directory: str, description: str) -> bool:
+    """Set description for a registered folder."""
+    data = _load()
+    if directory not in data:
+        return False
+    data[directory]["description"] = description
     _save(data)
     return True
 
