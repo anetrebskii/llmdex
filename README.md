@@ -71,6 +71,42 @@ llmdex index /path/to/project
 
 # Index specific file types
 llmdex index /path/to/project -e .md .ts .py .json
+
+# Assign tags while indexing (repeatable)
+llmdex index /path/to/project -t project:foo -t type:code
+
+# Split mode: also index each immediate subfolder as a separate child
+# index, tagged folder:<name>. Lets you narrow queries to one subfolder.
+llmdex index /path/to/project --split
+```
+
+#### Split indexing (`--split`)
+
+For large directories (monorepos, doc sites) where one monolithic index returns noisy results. `--split` creates a root index **plus a separate child index per immediate subfolder** (depth 1). Each child inherits the parent's tags and gets an automatic `folder:<name>` tag so you can narrow queries to one subfolder:
+
+```bash
+llmdex index ~/docs --split -t project:docs
+
+# Query everything under docs
+llmdex query -t project:docs "authentication"
+
+# Query only the api/ subfolder
+llmdex query -t project:docs -t folder:api "authentication"
+```
+
+Behavior:
+- Root index only contains files at the top level (no subfolder files — avoids duplication).
+- Subfolders in `SKIP_DIRS` (`node_modules`, `.git`, `dist`, ...) are skipped.
+- Subfolders with no matching files are skipped (no empty indexes).
+- `llmdex reindex` on a split parent automatically re-splits and picks up new/removed subfolders.
+- `llmdex remove` on a split parent cascades and removes all children + their storage.
+
+### `llmdex add` — Register a project without indexing
+
+Registers a directory (with extensions and optional tags) so a later `llmdex reindex` will build its index. Useful for scripting bulk setup.
+
+```bash
+llmdex add /path/to/project -e .md .ts -t project:foo
 ```
 
 ### `llmdex reindex` — Re-index all registered projects
@@ -79,9 +115,12 @@ Rebuilds indexes for all previously registered projects. Uses the file extension
 
 ```bash
 llmdex reindex
+
+# Force a full rebuild (ignore change detection)
+llmdex reindex -f
 ```
 
-Skips directories that no longer exist on disk.
+Skips directories that no longer exist on disk. Split parents automatically re-split their children.
 
 ### `llmdex list` — List all indexed projects
 
@@ -117,8 +156,14 @@ llmdex query -d /path/to/project "error handling"
 # Search across all indexed projects
 llmdex query -a "API endpoints"
 
-# Get more results (default: 5)
-llmdex query -k 10 "API endpoints"
+# Get more results (default: 10)
+llmdex query -k 20 "API endpoints"
+
+# Filter results to files under a folder prefix
+llmdex query -f src/api "error handling"
+
+# Compact output: file:lines only, no preview (for chaining / AI tools)
+llmdex query -c "auth flow"
 ```
 
 **Output:**
