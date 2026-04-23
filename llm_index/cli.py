@@ -363,6 +363,20 @@ Trigger whenever the user's request sounds like retrieval or recall:
 - "which project uses X?", "do we have an example of Y anywhere?"
 - Any question about past decisions, meetings, specs, or prior work.
 
+## External sources may be indexed locally
+
+GitHub issues/PRs, Slack threads, Confluence/Notion pages, and similar artifacts are often downloaded and indexed via llmdex (look for tags like `source:github`, `source:slack`, `source:confluence`, or `type:issues`). **Do not assume an external URL means you must reach for `gh` / WebFetch.**
+
+Before falling back to an external fetch:
+
+1. Run `llmdex catalog` and look for an index that matches the referenced source (by project + source/type tags).
+2. If one exists, query it (`-t project:X -t type:issues` etc.) -- the mirror is usually enough.
+3. Only if no matching index is present, use `gh issue view` / `gh pr view` / WebFetch.
+
+Separately, still query the corresponding *code* index to locate the local implementation tied to the issue.
+
+**Local mirrors are READ-ONLY.** If the user asks to edit, comment on, close, or otherwise *modify* an issue / PR / Slack message / Confluence page, do NOT edit the indexed file. The local copy is a snapshot for search only -- writes to it will not reach the source system and will be overwritten on the next re-index. Use `gh issue edit` / `gh pr comment` / the Slack or Confluence API for any mutation.
+
 ## llmdex vs Grep
 
 Prefer `llmdex` over Grep in almost every case. Grep returns raw line hits with no ranking and no semantic grouping -- on anything non-trivial it floods you with matches.

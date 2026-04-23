@@ -50,6 +50,7 @@ llmdex query -c "your question"
 
 ## Rules
 
+- Indexed external sources (GitHub issues/PRs, Slack, Confluence mirrors) are READ-ONLY. To modify an issue/PR/message, use `gh` / the source API -- never edit the local indexed file, since the change will not propagate and will be wiped on re-index.
 - `llmdex query` errors if the current directory is not indexed. Fall back to Grep/Glob.
 - User says "everywhere" / "across all projects" -- use `-a`.
 - User mentions a domain/project/layer ("in the backend", "in docs") -- run `llmdex catalog` first, then `-t <tag>`.
