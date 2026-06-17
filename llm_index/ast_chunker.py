@@ -63,6 +63,24 @@ CHUNK_TYPES: dict[str, set[str]] = {
         "method_declaration",
         "record_declaration",
     },
+    "csharp": {
+        "class_declaration",
+        "interface_declaration",
+        "struct_declaration",
+        "enum_declaration",
+        "record_declaration",
+        "delegate_declaration",
+        "method_declaration",
+        "constructor_declaration",
+        "property_declaration",
+    },
+    "dart": {
+        "class_definition",
+        "mixin_declaration",
+        "extension_declaration",
+        "enum_declaration",
+        "function_signature",  # top-level function; body is a sibling node
+    },
 }
 
 # Node types that contain nested methods we should extract individually.
@@ -74,6 +92,8 @@ CONTAINER_TYPES: dict[str, set[str]] = {
     "rust": {"impl_item", "trait_item"},
     "go": set(),
     "java": {"class_declaration", "interface_declaration", "enum_declaration"},
+    "csharp": {"class_declaration", "struct_declaration", "interface_declaration", "record_declaration"},
+    "dart": {"class_definition", "mixin_declaration", "extension_declaration"},
 }
 
 # Node types that represent methods inside a container.
@@ -84,6 +104,8 @@ METHOD_TYPES: dict[str, set[str]] = {
     "rust": {"function_item"},
     "go": set(),
     "java": {"method_declaration", "constructor_declaration"},
+    "csharp": {"method_declaration", "constructor_declaration", "property_declaration"},
+    "dart": {"method_signature"},  # each followed by a sibling function_body
 }
 
 # Max lines for a single chunk before we fall back to splitting
@@ -105,6 +127,23 @@ def _node_name(node, language: str) -> str:
         for child in node.children:
             if child.type in ("function_definition", "class_definition"):
                 return _node_name(child, language)
+
+    # Dart wraps the name one level down (method_signature -> function_signature ...).
+    if language == "dart" and node.type in ("method_signature", "declaration"):
+        for child in node.children:
+            if child.type.endswith("_signature"):
+                return _node_name(child, language)
+
+    # C# and Dart nodes expose the name via the "name" field.
+    if language in ("csharp", "dart"):
+        name_node = node.child_by_field_name("name")
+        if name_node is not None:
+            prefix = (
+                node.type.replace("_definition", "")
+                .replace("_declaration", "")
+                .replace("_signature", "")
+            )
+            return f"{prefix} {name_node.text.decode('utf-8', errors='replace')}".strip()
 
     # For export statements, dig into the declaration
     if node.type == "export_statement":
@@ -143,6 +182,8 @@ def _get_class_body_node(node, language: str):
         "javascript": "class_body",
         "rust": "declaration_list",
         "java": "class_body",
+        "csharp": "declaration_list",
+        "dart": "class_body",
     }
     target = body_types.get(language)
     if not target:
@@ -151,6 +192,28 @@ def _get_class_body_node(node, language: str):
         if child.type == target:
             return child
     return None
+
+
+def _method_units(body, language: str) -> list[tuple]:
+    """Return (signature_node, end_node) pairs for methods in a container body.
+
+    For most languages end_node is the method node itself. In Dart the method
+    signature and its body are separate sibling nodes, so end_node is the
+    trailing function_body."""
+    method_types = METHOD_TYPES.get(language, set())
+    kids = list(body.children)
+    units: list[tuple] = []
+    i = 0
+    while i < len(kids):
+        c = kids[i]
+        if c.type in method_types:
+            end = c
+            if language == "dart" and i + 1 < len(kids) and kids[i + 1].type == "function_body":
+                end = kids[i + 1]
+                i += 1
+            units.append((c, end))
+        i += 1
+    return units
 
 
 def _split_container(node, source_bytes: bytes, language: str) -> list[Chunk]:
@@ -167,7 +230,7 @@ def _split_container(node, source_bytes: bytes, language: str) -> list[Chunk]:
 
     # Shell = everything except method bodies (signature, fields, etc.)
     # We build it by collecting non-method lines from the node
-    methods = [child for child in body.children if child.type in method_types]
+    methods = _method_units(body, language)
 
     if not methods:
         text = node.text.decode("utf-8", errors="replace")
@@ -179,14 +242,14 @@ def _split_container(node, source_bytes: bytes, language: str) -> list[Chunk]:
     shell_lines = []
 
     # Lines before first method (class signature, fields)
-    first_method_row = methods[0].start_point.row
+    first_method_row = methods[0][0].start_point.row
     for i in range(node_start, first_method_row):
         shell_lines.append(lines[i - node_start])
 
     # Lines between methods and after last method (field declarations, etc.)
-    for idx, method in enumerate(methods):
-        method_end = method.end_point.row
-        next_start = methods[idx + 1].start_point.row if idx + 1 < len(methods) else node.end_point.row + 1
+    for idx, (sig, end) in enumerate(methods):
+        method_end = end.end_point.row
+        next_start = methods[idx + 1][0].start_point.row if idx + 1 < len(methods) else node.end_point.row + 1
         for i in range(method_end + 1, min(next_start, node.end_point.row + 1)):
             line = lines[i - node_start]
             if line.strip():  # skip blank lines in shell
@@ -206,18 +269,41 @@ def _split_container(node, source_bytes: bytes, language: str) -> list[Chunk]:
         ))
 
     # Individual methods with class context prefix
-    for method in methods:
-        method_text = method.text.decode("utf-8", errors="replace")
-        method_name = _node_name(method, language)
+    for sig, end in methods:
+        method_text = source_bytes[sig.start_byte : end.end_byte].decode("utf-8", errors="replace")
+        method_name = _node_name(sig, language)
         symbol = f"{container_name}.{method_name}"
         chunks.append(Chunk(
             method_text,
-            method.start_point.row + 1,
-            method.end_point.row + 1,
+            sig.start_point.row + 1,
+            end.end_point.row + 1,
             symbol,
         ))
 
     return chunks
+
+
+def _expand_csharp_namespace(node) -> list:
+    """C# block-scoped namespaces nest declarations in a declaration_list.
+    Flatten them so the inner types are chunked as if top-level."""
+    if node.type == "namespace_declaration":
+        body = next((c for c in node.children if c.type == "declaration_list"), None)
+        if body is not None:
+            out = []
+            for c in body.children:
+                out.extend(_expand_csharp_namespace(c))
+            return out
+    return [node]
+
+
+def _top_level_nodes(root, language: str) -> list:
+    """Top-level nodes to scan, with language-specific flattening."""
+    if language == "csharp":
+        out = []
+        for c in root.children:
+            out.extend(_expand_csharp_namespace(c))
+        return out
+    return list(root.children)
 
 
 def chunk_file(file_path: str, language: str) -> list[Chunk]:
@@ -234,12 +320,20 @@ def chunk_file(file_path: str, language: str) -> list[Chunk]:
     chunk_types = CHUNK_TYPES.get(language, set())
     container_types = CONTAINER_TYPES.get(language, set())
 
+    nodes = _top_level_nodes(root, language)
     chunks: list[Chunk] = []
     preamble_lines: list[str] = []
     preamble_start: int | None = None
-    for child in root.children:
+    i = 0
+    while i < len(nodes):
+        child = nodes[i]
+        # Dart splits a function into signature + body sibling nodes; pair them.
+        end_node = child
+        if language == "dart" and child.type in chunk_types and i + 1 < len(nodes) and nodes[i + 1].type == "function_body":
+            end_node = nodes[i + 1]
+            i += 1
         child_start = child.start_point.row
-        child_end = child.end_point.row
+        child_end = end_node.end_point.row
 
         if child.type in chunk_types:
             # Flush any accumulated preamble
@@ -256,15 +350,16 @@ def chunk_file(file_path: str, language: str) -> list[Chunk]:
             if child.type in container_types and node_lines > MAX_CHUNK_LINES:
                 chunks.extend(_split_container(child, source, language))
             else:
-                text = child.text.decode("utf-8", errors="replace")
+                text = source[child.start_byte : end_node.end_byte].decode("utf-8", errors="replace")
                 chunks.append(Chunk(text, child_start + 1, child_end + 1, _node_name(child, language)))
 
         else:
             # Accumulate into preamble (imports, constants, comments)
             if preamble_start is None:
                 preamble_start = child_start
-            text = child.text.decode("utf-8", errors="replace")
+            text = source[child.start_byte : end_node.end_byte].decode("utf-8", errors="replace")
             preamble_lines.append(text)
+        i += 1
 
     # Flush remaining preamble
     if preamble_lines:

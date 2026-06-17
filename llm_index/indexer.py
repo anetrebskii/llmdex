@@ -65,6 +65,8 @@ PARSER_MAP = {
     ".rs": "rust",
     ".go": "go",
     ".java": "java",
+    ".cs": "csharp",
+    ".dart": "dart",
     ".css": "text",
     ".html": "text",
     ".yaml": "text",
@@ -73,7 +75,7 @@ PARSER_MAP = {
     ".txt": "text",
 }
 
-CODE_LANGUAGES = {"typescript", "javascript", "python", "rust", "go", "java"}
+CODE_LANGUAGES = {"typescript", "javascript", "python", "rust", "go", "java", "csharp", "dart"}
 
 # Every extension we know how to parse. Indexing always uses this full set.
 DEFAULT_EXTENSIONS = tuple(PARSER_MAP)
