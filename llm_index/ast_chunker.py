@@ -9,7 +9,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from tree_sitter_language_pack import get_parser
+from functools import lru_cache
+
+from tree_sitter import Parser
+from tree_sitter_language_pack import get_language
+
+
+@lru_cache(maxsize=None)
+def _parser(language: str) -> Parser:
+    # Build via the modern tree_sitter binding. get_parser() can return a stale
+    # Parser whose parse() expects str instead of bytes.
+    return Parser(get_language(language))
 
 # Top-level node types to extract as individual chunks, per language.
 # Anything not listed here gets grouped into a "preamble" chunk.
@@ -218,8 +228,7 @@ def chunk_file(file_path: str, language: str) -> list[Chunk]:
     except OSError:
         return []
 
-    parser = get_parser(language)
-    tree = parser.parse(source)
+    tree = _parser(language).parse(source)
     root = tree.root_node
 
     chunk_types = CHUNK_TYPES.get(language, set())
