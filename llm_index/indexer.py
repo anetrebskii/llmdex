@@ -75,6 +75,9 @@ PARSER_MAP = {
 
 CODE_LANGUAGES = {"typescript", "javascript", "python", "rust", "go", "java"}
 
+# Every extension we know how to parse. Indexing always uses this full set.
+DEFAULT_EXTENSIONS = tuple(PARSER_MAP)
+
 
 def _git_ignored_files(root: Path, files: list[str]) -> set[str]:
     """Return subset of files that are git-ignored. Uses git check-ignore."""
@@ -394,7 +397,6 @@ def _load_embed_model(verbose: bool, log=_log):
 
 def build_index(
     workspace: Path,
-    extensions: tuple[str, ...] | None = None,
     embed_model=None,
     log=_log,
     verbose: bool = False,
@@ -406,22 +408,18 @@ def build_index(
 
     If split=True, also indexes each immediate subfolder as a separate child index
     tagged with folder:<name>. parent_tags is inherited by children."""
-    if extensions is None:
-        extensions = (".md", ".ts", ".json")
-
     if split:
         return _build_index_split(
-            workspace, extensions, embed_model, log, verbose, force, parent_tags
+            workspace, embed_model, log, verbose, force, parent_tags
         )
 
     return _build_index_single(
-        workspace, extensions, embed_model, log, verbose, force, root_only=False
+        workspace, embed_model, log, verbose, force, root_only=False
     )
 
 
 def _build_index_split(
     workspace: Path,
-    extensions: tuple[str, ...],
     embed_model,
     log,
     verbose: bool,
@@ -435,7 +433,7 @@ def _build_index_split(
 
     log(f"=== Root (root-level files only): {workspace} ===")
     root_result = _build_index_single(
-        workspace, extensions, embed_model, log, verbose, force, root_only=True
+        workspace, embed_model, log, verbose, force, root_only=True
     )
 
     # Discover immediate subfolders
@@ -456,7 +454,7 @@ def _build_index_split(
             log(f"  note: {sub} was already indexed independently -- overwriting")
 
         result = _build_index_single(
-            sub, extensions, embed_model, log, verbose, force, root_only=False
+            sub, embed_model, log, verbose, force, root_only=False
         )
         if result.get("error") or result.get("files", 0) == 0:
             log("  skipped (no matching files)")
@@ -467,7 +465,7 @@ def _build_index_split(
         children.append(str(sub))
 
     # Update parent registry entry with children list and split flag
-    register(str(workspace), list(extensions), children=children, split=True)
+    register(str(workspace), children=children, split=True)
     if parent_tags:
         set_tags(str(workspace), parent_tags)
 
@@ -476,7 +474,6 @@ def _build_index_split(
 
 def _build_index_single(
     workspace: Path,
-    extensions: tuple[str, ...],
     embed_model,
     log,
     verbose: bool,
@@ -486,7 +483,7 @@ def _build_index_single(
     """Build a single vector index (no splitting). Returns stats dict."""
     start = time.time()
 
-    all_files, gitignored = collect_files(workspace, extensions, root_only=root_only)
+    all_files, gitignored = collect_files(workspace, DEFAULT_EXTENSIONS, root_only=root_only)
 
     # Show per-extension counts
     ext_counts: dict[str, int] = {}
@@ -520,7 +517,6 @@ def _build_index_single(
             "nodes": 0,
             "elapsed": round(elapsed, 1),
             "directory": str(workspace),
-            "extensions": list(extensions),
             "skipped": True,
         }
 
@@ -587,12 +583,11 @@ def _build_index_single(
     # Register this folder
     from llm_index.registry import register
 
-    register(str(workspace), list(extensions))
+    register(str(workspace))
 
     return {
         "files": len(all_files),
         "nodes": len(new_nodes),
         "elapsed": round(elapsed, 1),
         "directory": str(workspace),
-        "extensions": list(extensions),
     }

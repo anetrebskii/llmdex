@@ -18,13 +18,8 @@ def cmd_index(args):
         print(f"Error: {workspace} is not a directory")
         sys.exit(1)
 
-    extensions = tuple(
-        ext if ext.startswith(".") else f".{ext}" for ext in args.extensions
-    )
-
     print(f"Indexing: {workspace}")
-    print(f"Extensions: {', '.join(extensions)}")
-    result = build_index(workspace, extensions)
+    result = build_index(workspace)
 
     if result.get("error"):
         print(result["error"])
@@ -47,9 +42,8 @@ def cmd_reindex(args):
             print(f"Skipping (not found): {directory}")
             continue
 
-        extensions = tuple(meta.get("extensions", [".md", ".ts", ".json"]))
-        print(f"--- {directory} ({', '.join(extensions)}) ---")
-        result = build_index(workspace, extensions)
+        print(f"--- {directory} ---")
+        result = build_index(workspace)
         if result.get("error"):
             print(f"  Error: {result['error']}")
         print()
@@ -65,13 +59,11 @@ def cmd_list(args):
         return
 
     for directory, meta in entries.items():
-        extensions = ", ".join(meta.get("extensions", []))
         store = storage_dir(Path(directory))
         exists = store.exists()
         status = "ok" if exists else "missing index"
         indexed_at = meta.get("indexed_at", "unknown")
         print(f"  {directory}")
-        print(f"    extensions: {extensions}")
         print(f"    indexed at: {indexed_at}")
         print(f"    status: {status}")
         print()
@@ -108,13 +100,6 @@ def main():
         )
         parser.add_argument(
             "directory", nargs="?", default=".", help="Project directory to index"
-        )
-        parser.add_argument(
-            "-e",
-            "--extensions",
-            nargs="+",
-            default=[".md", ".ts", ".json"],
-            help="File extensions to index (default: .md .ts .json)",
         )
         args = parser.parse_args()
         cmd_index(args)

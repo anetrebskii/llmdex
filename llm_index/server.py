@@ -177,11 +177,6 @@ class QueryHandler(BaseHTTPRequestHandler):
             self._json_response(400, {"error": f"'{workspace}' is not a directory"})
             return
 
-        extensions = body.get("extensions", [".md", ".ts", ".json"])
-        extensions = tuple(
-            ext if ext.startswith(".") else f".{ext}" for ext in extensions
-        )
-
         # Import here to avoid circular import at module level
         from llm_index.indexer import build_index
 
@@ -189,7 +184,6 @@ class QueryHandler(BaseHTTPRequestHandler):
         try:
             result = build_index(
                 workspace,
-                extensions=extensions,
                 embed_model=cache.get_embed_model(),
                 log=lambda msg: logs.append(msg),
             )
@@ -376,12 +370,10 @@ class QueryHandler(BaseHTTPRequestHandler):
                 results.append({"directory": directory, "error": "directory not found"})
                 continue
 
-            extensions = tuple(meta.get("extensions", [".md", ".ts", ".json"]))
             logs = []
             try:
                 result = build_index(
                     workspace,
-                    extensions=extensions,
                     embed_model=cache.get_embed_model(),
                     log=lambda msg: logs.append(msg),
                 )
@@ -406,7 +398,6 @@ class QueryHandler(BaseHTTPRequestHandler):
             items.append(
                 {
                     "directory": directory,
-                    "extensions": meta.get("extensions", []),
                     "indexed_at": meta.get("indexed_at", "unknown"),
                     "tags": meta.get("tags", []),
                     "has_index": store.exists(),

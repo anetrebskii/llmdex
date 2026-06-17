@@ -12,7 +12,7 @@ REGISTRY_FILE = Path.home() / ".llmdex" / "registry.json"
 
 
 def _load() -> dict[str, dict]:
-    """Load registry. Format: {"/abs/path": {"extensions": [".md", ".ts"], ...}}"""
+    """Load registry. Format: {"/abs/path": {"tags": [...], ...}}"""
     if not REGISTRY_FILE.exists():
         return {}
     try:
@@ -28,7 +28,6 @@ def _save(data: dict[str, dict]):
 
 def register(
     directory: str,
-    extensions: list[str],
     children: list[str] | None = None,
     split: bool | None = None,
     description: str | None = None,
@@ -37,7 +36,6 @@ def register(
     data = _load()
     existing = data.get(directory, {})
     entry = {
-        "extensions": extensions,
         "indexed_at": datetime.now(timezone.utc).isoformat(),
         "tags": existing.get("tags", []),
         "embed_model": EMBED_MODEL_NAME,

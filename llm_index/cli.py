@@ -19,17 +19,11 @@ def cmd_index(args):
         print(f"Error: {workspace} is not a directory")
         sys.exit(1)
 
-    extensions = tuple(
-        ext if ext.startswith(".") else f".{ext}" for ext in args.extensions
-    )
-
     print(f"Indexing: {workspace}")
-    print(f"Extensions: {', '.join(extensions)}")
     if args.split:
         print("Mode: split (root + each immediate subfolder as separate index)")
     result = build_index(
         workspace,
-        extensions,
         verbose=args.verbose,
         split=args.split,
         parent_tags=args.tag,
@@ -65,8 +59,7 @@ def cmd_add(args):
         print(f"Error: {workspace} is not a directory")
         sys.exit(1)
 
-    extensions = [ext if ext.startswith(".") else f".{ext}" for ext in args.extensions]
-    register(str(workspace), extensions, description=args.description)
+    register(str(workspace), description=args.description)
 
     if args.tag:
         set_tags(str(workspace), args.tag)
@@ -75,7 +68,6 @@ def cmd_add(args):
     print(f"Registered: {workspace}{tags_str}")
     if args.description:
         print(f"  description: {args.description}")
-    print(f"  extensions: {', '.join(extensions)}")
     print("Run `llmdex reindex` to build the index.")
 
 
@@ -104,13 +96,11 @@ def cmd_reindex(args):
             print(f"Skipping (not found): {directory}")
             continue
 
-        extensions = tuple(meta.get("extensions", [".md", ".ts", ".json"]))
         split = bool(meta.get("split"))
         parent_tags = meta.get("tags", []) if split else None
-        print(f"--- {directory} ({', '.join(extensions)}){' [split]' if split else ''} ---")
+        print(f"--- {directory}{' [split]' if split else ''} ---")
         result = build_index(
             workspace,
-            extensions,
             verbose=args.verbose,
             force=args.force,
             split=split,
@@ -132,7 +122,6 @@ def cmd_list(args):
         return
 
     for directory, meta in entries.items():
-        extensions = ", ".join(meta.get("extensions", []))
         store = storage_dir(Path(directory))
         exists = store.exists()
         status = "ok" if exists else "missing index"
@@ -140,7 +129,6 @@ def cmd_list(args):
         tags = meta.get("tags", [])
         description = meta.get("description", "")
         print(f"  {directory}")
-        print(f"    extensions: {extensions}")
         if tags:
             print(f"    tags: {', '.join(tags)}")
         if description:
@@ -569,13 +557,6 @@ def main():
         "directory", nargs="?", default=".", help="Project directory (default: .)"
     )
     p_index.add_argument(
-        "-e",
-        "--extensions",
-        nargs="+",
-        default=[".md", ".ts", ".json"],
-        help="File extensions to index (default: .md .ts .json)",
-    )
-    p_index.add_argument(
         "-t",
         "--tag",
         action="append",
@@ -602,13 +583,6 @@ def main():
     p_add = sub.add_parser("add", help="Register a project without indexing (use reindex later)")
     p_add.add_argument(
         "directory", nargs="?", default=".", help="Project directory (default: .)"
-    )
-    p_add.add_argument(
-        "-e",
-        "--extensions",
-        nargs="+",
-        default=[".md", ".ts", ".json"],
-        help="File extensions to index (default: .md .ts .json)",
     )
     p_add.add_argument(
         "-t",
