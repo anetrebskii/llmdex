@@ -14,7 +14,7 @@ Local semantic search for your projects. No API keys, no cloud — everything ru
 >
 > *Real benchmarks with Claude Code on a production codebase.*
 
-llmdex indexes your project files (Markdown, TypeScript, JSON) into a local vector database and lets you search by meaning, not just keywords.
+llmdex indexes your project files across many languages (TypeScript, JavaScript, Python, Rust, Go, Java, C#, Dart, plus Markdown, JSON, YAML, and more) into a local vector database and lets you search by meaning, not just keywords. There's nothing to configure — it picks up every file type it knows how to parse automatically.
 
 Inspired by the original idea and Python scripts of [@lnetrebskii](https://github.com/lnetrebskii).
 
@@ -69,9 +69,6 @@ llmdex index
 # Index a specific project
 llmdex index /path/to/project
 
-# Index specific file types
-llmdex index /path/to/project -e .md .ts .py .json
-
 # Assign tags while indexing (repeatable)
 llmdex index /path/to/project -t project:foo -t type:code
 
@@ -103,15 +100,15 @@ Behavior:
 
 ### `llmdex add` — Register a project without indexing
 
-Registers a directory (with extensions and optional tags) so a later `llmdex reindex` will build its index. Useful for scripting bulk setup.
+Registers a directory (with optional tags) so a later `llmdex reindex` will build its index. Useful for scripting bulk setup.
 
 ```bash
-llmdex add /path/to/project -e .md .ts -t project:foo
+llmdex add /path/to/project -t project:foo
 ```
 
 ### `llmdex reindex` — Re-index all registered projects
 
-Rebuilds indexes for all previously registered projects. Uses the file extensions stored during the original `llmdex index` call.
+Rebuilds indexes for all previously registered projects. Re-indexing is incremental by default — only new, changed, and deleted files are reprocessed (use `-f` to force a full rebuild).
 
 ```bash
 llmdex reindex
@@ -136,13 +133,18 @@ llmdex remove /path/to/project
 
 Indexes are stored centrally in `~/.llmdex/indexes/` — project directories stay clean.
 
-**What gets indexed by default:**
-- `.md` files — parsed by headings and sections
-- `.ts` files — parsed by code structure (functions, classes)
-- `.json` files — parsed by text chunks
+**What gets indexed:**
+
+llmdex automatically picks up every file type it knows how to parse — no `--extensions` flag needed.
+
+- **Code**, chunked by structure (functions, classes, methods) via tree-sitter:
+  `.ts` `.tsx` `.js` `.jsx` `.py` `.rs` `.go` `.java` `.cs` `.dart`
+- **Markdown** (`.md`) — parsed by headings and sections
+- **Text / config** — `.json` `.yaml` `.yml` `.toml` `.css` `.html` `.txt`, chunked by text boundaries
 
 **What gets skipped:**
-`node_modules`, `.git`, `dist`, `build`, `.next`, `.venv`, `__pycache__`, and other common build/cache directories.
+- `node_modules`, `.git`, `dist`, `build`, `.next`, `.venv`, `__pycache__`, and other common build/cache directories.
+- Files ignored by `.gitignore` (when the project is a git repo).
 
 ### `llmdex query` — Search the index
 
@@ -297,7 +299,7 @@ The server exposes a local HTTP API on `127.0.0.1:7392`. You can use it directly
 # Index a project
 curl -s http://127.0.0.1:7392/index \
   -H "Content-Type: application/json" \
-  -d '{"directory": "/path/to/project", "extensions": [".md", ".ts", ".py"]}'
+  -d '{"directory": "/path/to/project"}'
 
 # Search
 curl -s http://127.0.0.1:7392/query \
@@ -315,7 +317,7 @@ curl http://127.0.0.1:7392/health
 
 ## How it works
 
-1. **Indexing** — Files are parsed into chunks using smart parsers (Markdown by headings, TypeScript by code structure, JSON by text boundaries). Each chunk is embedded into a vector using [all-MiniLM-L6-v2](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2), a small local model (~80MB). Vectors are stored in `~/.llmdex/indexes/`.
+1. **Indexing** — Files are parsed into chunks using smart parsers (Markdown by headings, source code by structure via tree-sitter, config/text by boundaries). Each chunk is embedded into a vector using [bge-small-en-v1.5](https://huggingface.co/BAAI/bge-small-en-v1.5), a small local model. Vectors are stored in `~/.llmdex/indexes/`.
 
 2. **Querying** — Your search query is embedded with the same model, then compared against all stored vectors to find the most semantically similar chunks. This means "how does login work" will find code about authentication even if the word "login" doesn't appear.
 
