@@ -11,7 +11,11 @@ dependencies = [
     "llama-index-core",
     "llama-index-readers-file",
     "llama-index-embeddings-huggingface",
-    "tree-sitter-language-pack",
+    # Pin: language-pack 1.x bundles its own tree-sitter binding (returns
+    # builtins.Language) which is incompatible with the standalone tree_sitter
+    # Parser used in ast_chunker. 0.13.x delegates to the real tree_sitter.
+    "tree-sitter-language-pack==0.13.0",
+    "tree-sitter==0.25.2",
     "rank-bm25",
 ]
 

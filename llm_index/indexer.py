@@ -175,8 +175,10 @@ def _save_embed_cache(store: Path, cache: dict[str, list[float]]):
 
 
 def _text_hash(text: str) -> str:
+    # Key by model too: embeddings are model-specific, so a model switch must
+    # miss the cache and recompute rather than reuse another model's vectors.
     import hashlib
-    return hashlib.md5(text.encode()).hexdigest()
+    return hashlib.md5((EMBED_MODEL_NAME + "\0" + text).encode()).hexdigest()
 
 
 def _embed_with_cache(nodes: list, embed_model, cache: dict[str, list[float]], log=_log) -> None:
