@@ -539,12 +539,20 @@ def _build_index_single(
 
     embed_cache = _load_embed_cache(out)
 
+    index = None
     if has_existing_index and (len(files_to_parse) + len(deleted_files)) < len(all_files):
         # Incremental update
         log(f"Incremental update: {len(new_files)} new, {len(changed_files)} changed, {len(deleted_files)} deleted")
-        storage_context = StorageContext.from_defaults(persist_dir=str(out))
-        index = load_index_from_storage(storage_context, embed_model=embed_model)
+        try:
+            storage_context = StorageContext.from_defaults(persist_dir=str(out))
+            index = load_index_from_storage(storage_context, embed_model=embed_model)
+        except Exception as e:
+            # A killed run can leave a truncated/empty persisted JSON. Don't crash --
+            # fall back to a full rebuild.
+            log(f"  existing index unreadable ({type(e).__name__}); rebuilding from scratch")
+            index = None
 
+    if index is not None:
         # Remove nodes for changed and deleted files
         for f in changed_files + deleted_files:
             try:
