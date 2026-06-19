@@ -19,9 +19,8 @@ from llama_index.core import (
     load_index_from_storage,
     Settings,
 )
-from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 
-from llm_index.indexer import storage_dir, EMBED_MODEL_NAME
+from llm_index.indexer import storage_dir, EMBED_MODEL_NAME, make_hf_embedding
 
 INACTIVITY_TIMEOUT = 1800  # 30 minutes
 PID_DIR = Path.home() / ".llmdex"
@@ -59,7 +58,7 @@ class IndexCache:
 
     def get_embed_model(self):
         if self.embed_model is None:
-            self.embed_model = HuggingFaceEmbedding(model_name=EMBED_MODEL_NAME)
+            self.embed_model = make_hf_embedding()
             Settings.embed_model = self.embed_model
             Settings.llm = None
         return self.embed_model

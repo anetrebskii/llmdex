@@ -317,7 +317,7 @@ curl http://127.0.0.1:7392/health
 
 ## How it works
 
-1. **Indexing** — Files are parsed into chunks using smart parsers (Markdown by headings, source code by structure via tree-sitter, config/text by boundaries). Each chunk is embedded into a vector using [bge-small-en-v1.5](https://huggingface.co/BAAI/bge-small-en-v1.5), a small local model. Vectors are stored in `~/.llmdex/indexes/`.
+1. **Indexing** — Files are parsed into chunks using smart parsers (Markdown by headings, source code by structure via tree-sitter, config/text by boundaries). Each chunk is embedded into a vector using a small local model ([multilingual-e5-small](https://huggingface.co/intfloat/multilingual-e5-small) by default — see [Advanced: changing the embedding model](#advanced-changing-the-embedding-model)). Vectors are stored in `~/.llmdex/indexes/`.
 
 2. **Querying** — Your search query is embedded with the same model, then compared against all stored vectors to find the most semantically similar chunks. This means "how does login work" will find code about authentication even if the word "login" doesn't appear.
 
@@ -381,6 +381,31 @@ pipx uninstall llmdex
 
 # Remove all data (indexes + server PID)
 rm -rf ~/.llmdex
+```
+
+## Advanced: changing the embedding model
+
+By default llmdex embeds with `intfloat/multilingual-e5-small` — a compact multilingual model that handles non-English content (Russian, etc.) as well as code. Override it with the `LLMDEX_EMBED_MODEL` environment variable to use any [Hugging Face sentence-transformers](https://huggingface.co/models?library=sentence-transformers) model:
+
+```bash
+# Higher quality, larger/slower
+LLMDEX_EMBED_MODEL=intfloat/multilingual-e5-base llmdex index <dir>
+
+# Top multilingual quality, heaviest (~2.3 GB, more RAM)
+LLMDEX_EMBED_MODEL=BAAI/bge-m3 llmdex index <dir>
+
+# English-only, smallest/fastest
+LLMDEX_EMBED_MODEL=BAAI/bge-small-en-v1.5 llmdex index <dir>
+```
+
+Notes:
+
+- Set the variable for **both** indexing (`index` / `reindex`) and querying (`query`, server) — the query model must match the model an index was built with. Export it in your shell profile to make it permanent.
+- e5 models (`*-e5-*`) need `query:` / `passage:` prefixes to perform well; llmdex applies these automatically.
+- Changing the model makes existing indexes incompatible (different vectors/dimensions). Rebuild everything after switching:
+
+```bash
+llmdex reindex --force
 ```
 
 ## License

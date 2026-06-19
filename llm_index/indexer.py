@@ -22,7 +22,17 @@ from llama_index.core.node_parser import (
 from llama_index.core.schema import TextNode
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 
-EMBED_MODEL_NAME = "BAAI/bge-small-en-v1.5"
+EMBED_MODEL_NAME = os.environ.get("LLMDEX_EMBED_MODEL", "intfloat/multilingual-e5-small")
+
+
+def make_hf_embedding(model_name=None):
+    """Build the HuggingFaceEmbedding. e5 models need query/passage prefixes to perform well."""
+    model_name = model_name or EMBED_MODEL_NAME
+    kwargs = {"model_name": model_name}
+    if "e5" in model_name.lower():
+        kwargs["query_instruction"] = "query: "
+        kwargs["text_instruction"] = "passage: "
+    return HuggingFaceEmbedding(**kwargs)
 
 SKIP_DIRS = {
     "node_modules",
@@ -384,7 +394,7 @@ def _load_embed_model(verbose: bool, log=_log):
         os.dup2(_devnull, 1)
         os.dup2(_devnull, 2)
     try:
-        embed_model = HuggingFaceEmbedding(model_name=EMBED_MODEL_NAME)
+        embed_model = make_hf_embedding()
         Settings.embed_model = embed_model
         Settings.llm = None
     finally:
