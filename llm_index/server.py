@@ -482,6 +482,31 @@ def start_server(port: int = DEFAULT_PORT, timeout: int = INACTIVITY_TIMEOUT):
     server.serve_forever()
 
 
+def _detached_spawn(cmd: list[str]):
+    """Popen a background process that survives the launching process's exit.
+
+    On Windows, harnesses like Claude Code run commands inside a Job Object with
+    kill-on-close; a plainly spawned child is killed when the launching `llmdex`
+    process exits. Detach it and break it out of the job (falling back to a plain
+    detached spawn if the job forbids breakaway). `start_new_session` is a no-op
+    on Windows, so it only helps on POSIX.
+    """
+    import subprocess
+
+    common = dict(stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if sys.platform == "win32":
+        detached = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+        try:
+            return subprocess.Popen(
+                cmd,
+                creationflags=detached | subprocess.CREATE_BREAKAWAY_FROM_JOB,
+                **common,
+            )
+        except OSError:
+            return subprocess.Popen(cmd, creationflags=detached, **common)
+    return subprocess.Popen(cmd, start_new_session=True, **common)
+
+
 def get_running_server() -> tuple[int, int, str] | None:
     """Returns (pid, port, version) if server is running, None otherwise."""
     pf = pid_file()
@@ -530,9 +555,9 @@ def stop_server(pid: int, port: int, wait: float = 5.0) -> bool:
             pid_file().unlink(missing_ok=True)
             return True
 
-    # Force kill
+    # Force kill (no SIGKILL on Windows; os.kill there is already a hard TerminateProcess)
     try:
-        os.kill(pid, signal.SIGKILL)
+        os.kill(pid, getattr(signal, "SIGKILL", signal.SIGTERM))
         time.sleep(0.5)
     except OSError:
         pass
@@ -630,9 +655,7 @@ def main():
 
 def _launch_background(port: int, timeout: int):
     """Start server as a background process, wait for it, print status."""
-    import subprocess
-
-    subprocess.Popen(
+    _detached_spawn(
         [
             sys.executable,
             "-m",
@@ -642,10 +665,7 @@ def _launch_background(port: int, timeout: int):
             str(port),
             "-t",
             str(timeout),
-        ],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        start_new_session=True,
+        ]
     )
 
     for _ in range(60):

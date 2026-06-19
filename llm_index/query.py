@@ -3,7 +3,6 @@
 
 import argparse
 import json
-import subprocess
 import sys
 import time
 import urllib.request
@@ -15,17 +14,13 @@ from llm_index.server import (
     get_version,
     health_check,
     stop_server,
+    _detached_spawn,
 )
 
 
 def _start_new_server() -> int:
     """Launch server subprocess and wait for it to come up. Returns port."""
-    subprocess.Popen(
-        [sys.executable, "-m", "llm_index.server", "--serve"],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        start_new_session=True,
-    )
+    _detached_spawn([sys.executable, "-m", "llm_index.server", "--serve"])
 
     for _ in range(60):
         time.sleep(0.5)
