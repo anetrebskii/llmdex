@@ -460,7 +460,7 @@ def start_server(port: int = DEFAULT_PORT, timeout: int = INACTIVITY_TIMEOUT):
 
     # Write PID file with version
     pf = pid_file()
-    pf.write_text(f"{os.getpid()}\n{port}\n{get_version()}")
+    pf.write_text(f"{os.getpid()}\n{port}\n{get_version()}", encoding="utf-8")
 
     def cleanup(*_):
         pf.unlink(missing_ok=True)
@@ -513,7 +513,7 @@ def get_running_server() -> tuple[int, int, str] | None:
     if not pf.exists():
         return None
     try:
-        lines = pf.read_text().strip().split("\n")
+        lines = pf.read_text(encoding="utf-8").strip().split("\n")
         pid, port = int(lines[0]), int(lines[1])
         ver = lines[2] if len(lines) > 2 else "unknown"
         os.kill(pid, 0)  # check if process exists

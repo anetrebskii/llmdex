@@ -16,14 +16,14 @@ def _load() -> dict[str, dict]:
     if not REGISTRY_FILE.exists():
         return {}
     try:
-        return json.loads(REGISTRY_FILE.read_text())
+        return json.loads(REGISTRY_FILE.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return {}
 
 
 def _save(data: dict[str, dict]):
     REGISTRY_FILE.parent.mkdir(parents=True, exist_ok=True)
-    REGISTRY_FILE.write_text(json.dumps(data, indent=2))
+    REGISTRY_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
 
 def register(

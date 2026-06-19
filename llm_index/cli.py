@@ -4,9 +4,10 @@
 import argparse
 import sys
 
-# Force unbuffered output so progress is visible in real time
-sys.stdout.reconfigure(line_buffering=True)
-sys.stderr.reconfigure(line_buffering=True)
+# Force UTF-8 + unbuffered output so progress is visible in real time and
+# non-Latin content prints on Windows (where stdout defaults to cp1252).
+sys.stdout.reconfigure(encoding="utf-8", line_buffering=True)
+sys.stderr.reconfigure(encoding="utf-8", line_buffering=True)
 
 
 def cmd_index(args):

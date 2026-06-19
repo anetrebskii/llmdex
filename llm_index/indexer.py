@@ -155,13 +155,13 @@ def _load_embed_cache(store: Path) -> dict[str, list[float]]:
     if not cp.exists():
         return {}
     try:
-        return json.loads(cp.read_text())
+        return json.loads(cp.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return {}
 
 
 def _save_embed_cache(store: Path, cache: dict[str, list[float]]):
-    _embed_cache_path(store).write_text(json.dumps(cache))
+    _embed_cache_path(store).write_text(json.dumps(cache), encoding="utf-8")
 
 
 def _text_hash(text: str) -> str:
@@ -212,13 +212,13 @@ def _load_manifest(store: Path) -> dict[str, dict]:
     if not mp.exists():
         return {}
     try:
-        return json.loads(mp.read_text())
+        return json.loads(mp.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return {}
 
 
 def _save_manifest(store: Path, manifest: dict[str, dict]):
-    _manifest_path(store).write_text(json.dumps(manifest))
+    _manifest_path(store).write_text(json.dumps(manifest), encoding="utf-8")
 
 
 def _diff_files(
