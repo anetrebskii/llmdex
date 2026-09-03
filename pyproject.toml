@@ -19,6 +19,10 @@ dependencies = [
     "rank-bm25",
 ]
 
+[tool.ruff.lint]
+# Ruff's implicit defaults widened in 0.16 and broke CI on unchanged code; state them here.
+select = ["E4", "E7", "E9", "F"]
+
 [tool.setuptools.packages.find]
 include = ["llm_index"]
 
