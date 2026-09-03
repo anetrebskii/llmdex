@@ -23,12 +23,14 @@ from llama_index.core.schema import TextNode
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 
 EMBED_MODEL_NAME = os.environ.get("LLMDEX_EMBED_MODEL", "intfloat/multilingual-e5-small")
+# CPU by default: on MPS the model's Metal allocation (~1 GB) stays resident for the server's lifetime.
+EMBED_DEVICE = os.environ.get("LLMDEX_EMBED_DEVICE", "cpu")
 
 
 def make_hf_embedding(model_name=None):
     """Build the HuggingFaceEmbedding. e5 models need query/passage prefixes to perform well."""
     model_name = model_name or EMBED_MODEL_NAME
-    kwargs = {"model_name": model_name}
+    kwargs = {"model_name": model_name, "device": EMBED_DEVICE}
     if "e5" in model_name.lower():
         kwargs["query_instruction"] = "query: "
         kwargs["text_instruction"] = "passage: "

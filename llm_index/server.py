@@ -10,6 +10,7 @@ import sys
 import threading
 import time
 import urllib.request
+from collections import OrderedDict
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from importlib.metadata import version as pkg_version, PackageNotFoundError
 from pathlib import Path
@@ -25,6 +26,10 @@ from llm_index.indexer import storage_dir, EMBED_MODEL_NAME, make_hf_embedding
 INACTIVITY_TIMEOUT = 1800  # 30 minutes
 PID_DIR = Path.home() / ".llmdex"
 DEFAULT_PORT = 7392
+# Budget is measured against the index's on-disk size; in RAM it inflates roughly 2-4x once
+# chunks, embeddings and BM25 tables are Python objects. Without it an `-a` query loads all
+# 16 GB of registered indexes and never gives the memory back.
+MAX_CACHED_MB = max(1, int(os.environ.get("LLMDEX_MAX_CACHED_MB", "1024")))
 
 
 def get_version() -> str:
@@ -52,8 +57,9 @@ class IndexCache:
 
     def __init__(self):
         self.embed_model = None
-        self.indexes: dict[str, object] = {}
-        self.bm25_data: dict[str, tuple] = {}  # key -> (BM25Okapi, node_list)
+        self.indexes: OrderedDict[str, object] = OrderedDict()
+        self.bm25_data: OrderedDict[str, tuple] = OrderedDict()  # key -> (BM25Okapi, node_list)
+        self.sizes: dict[str, int] = {}  # key -> on-disk bytes, the eviction cost proxy
         self.lock = threading.RLock()
 
     def get_embed_model(self):
@@ -86,6 +92,11 @@ class IndexCache:
                         )
                 ctx = StorageContext.from_defaults(persist_dir=str(store))
                 self.indexes[key] = load_index_from_storage(ctx)
+                self.sizes[key] = sum(
+                    f.stat().st_size for f in store.rglob("*") if f.is_file()
+                )
+            self.indexes.move_to_end(key)
+            self._evict()
             return self.indexes[key]
 
     def get_bm25(self, workspace: Path):
@@ -100,11 +111,20 @@ class IndexCache:
                 self.bm25_data[key] = (bm25, all_nodes)
             return self.bm25_data[key]
 
+    def _evict(self):
+        budget = MAX_CACHED_MB * 1024 * 1024
+        total = sum(self.sizes.values())
+        while total > budget and len(self.indexes) > 1:
+            evicted, _ = self.indexes.popitem(last=False)
+            self.bm25_data.pop(evicted, None)
+            total -= self.sizes.pop(evicted, 0)
+
     def invalidate(self, workspace: Path):
         key = str(workspace)
         with self.lock:
             self.indexes.pop(key, None)
             self.bm25_data.pop(key, None)
+            self.sizes.pop(key, None)
 
 
 cache = IndexCache()

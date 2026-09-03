@@ -3,6 +3,7 @@
 
 import argparse
 import json
+import os
 import sys
 import time
 import urllib.request
@@ -16,6 +17,9 @@ from llm_index.server import (
     stop_server,
     _detached_spawn,
 )
+
+# A tag or -a query loads every matching index that is not cached; 21 indexes takes ~2 min.
+QUERY_TIMEOUT = int(os.environ.get("LLMDEX_QUERY_TIMEOUT", "600"))
 
 
 def _start_new_server() -> int:
@@ -87,7 +91,7 @@ def query_server(port: int, question: str, top_k: int, directory: str | None = N
     )
 
     try:
-        with urllib.request.urlopen(req, timeout=120) as resp:
+        with urllib.request.urlopen(req, timeout=QUERY_TIMEOUT) as resp:
             data = json.loads(resp.read())
     except urllib.error.HTTPError as e:
         try:
