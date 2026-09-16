@@ -1,44 +1,51 @@
 #!/usr/bin/env python3
 """Core indexing logic, shared by CLI and server."""
 
+import hashlib
 import json
 import logging
 import os
+import re
+import shutil
 import subprocess
 import time
 from pathlib import Path
 
-from llama_index.core import (
-    SimpleDirectoryReader,
-    StorageContext,
-    VectorStoreIndex,
-    Settings,
-    load_index_from_storage,
-)
-from llama_index.core.node_parser import (
-    MarkdownNodeParser,
-    SentenceSplitter,
-)
-from llama_index.core.schema import TextNode
-from llama_index.embeddings.huggingface import HuggingFaceEmbedding
+import numpy as np
 
-EMBED_MODEL_NAME = os.environ.get("LLMDEX_EMBED_MODEL", "intfloat/multilingual-e5-small")
+from llm_index.registry import EMBED_MODEL_NAME, get_entry, storage_dir
+
+# llama_index and torch are imported where they are used: `llmdex query` and a reindex with no changes never need them.
+
 # CPU by default: on MPS the model's Metal allocation (~1 GB) stays resident for the server's lifetime.
 EMBED_DEVICE = os.environ.get("LLMDEX_EMBED_DEVICE", "cpu")
 
+# One file per index, replaced atomically: chunk text, file and lines as JSON, and a float32 row per chunk.
+INDEX_FILE = "index.npz"
+# What the llama_index JSON format left behind before index.npz.
+LEGACY_FILES = ("docstore.json", "default__vector_store.json", "index_store.json", "graph_store.json", "image__vector_store.json", "embed_cache.json")
 
-def make_hf_embedding(model_name=None):
+
+def make_hf_embedding(model_name=None, device=EMBED_DEVICE, batch_size=10):
     """Build the HuggingFaceEmbedding. e5 models need query/passage prefixes to perform well."""
+    from llama_index.embeddings.huggingface import HuggingFaceEmbedding
+
     model_name = model_name or EMBED_MODEL_NAME
-    kwargs = {"model_name": model_name, "device": EMBED_DEVICE}
+    kwargs = {"model_name": model_name, "device": device, "embed_batch_size": batch_size}
     if "e5" in model_name.lower():
         kwargs["query_instruction"] = "query: "
         kwargs["text_instruction"] = "passage: "
-    return HuggingFaceEmbedding(**kwargs)
+    try:
+        # A cached model loads in 0.8 s instead of 8 s, because the hub is not asked for updates; the hub is used only when the model is missing.
+        return HuggingFaceEmbedding(**kwargs, local_files_only=True)
+    except OSError:
+        return HuggingFaceEmbedding(**kwargs)
 
 SKIP_DIRS = {
     "node_modules",
     ".git",
+    ".notula",
+    ".obsidian",
     ".llm-index",
     ".claude",
     ".cursor",
@@ -89,13 +96,28 @@ PARSER_MAP = {
 
 CODE_LANGUAGES = {"typescript", "javascript", "python", "rust", "go", "java", "csharp", "dart"}
 
+# Inline base64 payloads (images in saved HTML) are unsearchable, and one file of them made 40k chunks.
+DATA_URI = re.compile(r"(data:[\w/+.-]+;base64,)[A-Za-z0-9+/=]{100,}")
+# HTML is indexed as the text a reader sees: scripts, styles, inline SVG, comments and tags go.
+HTML_MARKUP = re.compile(r"<(script|style|svg)\b.*?</\1\s*>|<!--.*?-->|<[^>]*>", re.S | re.I)
+
+
+def _clean_text(text: str, path: str) -> str:
+    """Drop content nobody searches for. Newlines stay, so line numbers still match the file."""
+    text = DATA_URI.sub(r"\1", text)
+    if path.lower().endswith(".html"):
+        text = HTML_MARKUP.sub(lambda m: "\n" * m.group().count("\n"), text)
+        text = re.sub(r" ?\n ?", "\n", re.sub(r"[ \t]+", " ", text))
+    return text
+
 # Every extension we know how to parse. Indexing always uses this full set.
 DEFAULT_EXTENSIONS = tuple(PARSER_MAP)
 
 
 def _git_ignored_files(root: Path, files: list[str]) -> set[str]:
-    """Return subset of files that are git-ignored. Uses git check-ignore."""
-    if not (root / ".git").exists():
+    """Return subset of files that are git-ignored by the repository holding root. Uses git check-ignore."""
+    top = next((p for p in (root, *root.parents) if (p / ".git").exists()), None)
+    if top is None:
         return set()
     try:
         result = subprocess.run(
@@ -103,7 +125,7 @@ def _git_ignored_files(root: Path, files: list[str]) -> set[str]:
             input="\0".join(files),
             capture_output=True,
             text=True,
-            cwd=root,
+            cwd=top,
             timeout=30,
         )
         if result.returncode not in (0, 1):  # 1 = none ignored
@@ -141,68 +163,56 @@ def collect_files(
     return files, len(ignored)
 
 
-DATA_DIR = Path.home() / ".llmdex" / "indexes"
-
-
-def storage_dir(workspace: Path) -> Path:
-    """Central storage: ~/.llmdex/indexes/<hash>-<name>/"""
-    import hashlib
-
-    key = hashlib.sha256(str(workspace).encode()).hexdigest()[:12]
-    name = workspace.name
-    return DATA_DIR / f"{key}-{name}"
-
-
 def _log(msg):
     print(msg, flush=True)
 
 
-def _embed_cache_path(store: Path) -> Path:
-    return store / "embed_cache.json"
+def load_index(store: Path) -> tuple[dict, np.ndarray]:
+    """Chunks as row-aligned lists (files, start_lines, end_lines, texts) and their float32 vectors."""
+    with np.load(store / INDEX_FILE) as data:
+        return json.loads(data["chunks"].tobytes()), data["vectors"]
 
 
-def _load_embed_cache(store: Path) -> dict[str, list[float]]:
-    """Load {text_md5: embedding_vector} cache."""
-    cp = _embed_cache_path(store)
-    if not cp.exists():
-        return {}
-    try:
-        return json.loads(cp.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return {}
+def _save_index(store: Path, chunks: dict, vectors: np.ndarray):
+    store.mkdir(parents=True, exist_ok=True)
+    tmp = store / (INDEX_FILE + ".tmp")
+    with open(tmp, "wb") as f:
+        np.savez(f, vectors=vectors, chunks=np.frombuffer(json.dumps(chunks, ensure_ascii=False).encode(), dtype=np.uint8))
+    os.replace(tmp, store / INDEX_FILE)
 
 
-def _save_embed_cache(store: Path, cache: dict[str, list[float]]):
-    _embed_cache_path(store).write_text(json.dumps(cache), encoding="utf-8")
+def _legacy_vectors(store: Path) -> dict[str, np.ndarray]:
+    """{text_md5: vector} from an index in the llama_index JSON format, so converting it embeds nothing twice."""
+    vectors = json.loads((store / "default__vector_store.json").read_text(encoding="utf-8"))["embedding_dict"]
+    docs = json.loads((store / "docstore.json").read_text(encoding="utf-8"))["docstore/data"]
+    return {
+        _text_hash(d["__data__"]["text"]): np.asarray(vectors[nid], dtype=np.float32)
+        for nid, d in docs.items()
+        if nid in vectors
+    }
 
 
 def _text_hash(text: str) -> str:
     # Key by model too: embeddings are model-specific, so a model switch must
     # miss the cache and recompute rather than reuse another model's vectors.
-    import hashlib
     return hashlib.md5((EMBED_MODEL_NAME + "\0" + text).encode()).hexdigest()
 
 
-def _embed_with_cache(nodes: list, embed_model, cache: dict[str, list[float]], log=_log) -> None:
-    """Set node.embedding for all nodes, using cache where possible.
-    Computes missing embeddings in batch and updates the cache."""
-    to_embed = []
-    for node in nodes:
-        h = _text_hash(node.text)
-        if h in cache:
-            node.embedding = cache[h]
-        else:
-            to_embed.append(node)
-
-    if to_embed:
-        log(f"Embedding cache: {len(nodes) - len(to_embed)} cached, {len(to_embed)} to compute")
-        texts = [n.text for n in to_embed]
-        vectors = embed_model.get_text_embedding_batch(texts)
-        for node, vec in zip(to_embed, vectors):
-            node.embedding = vec
-            cache[_text_hash(node.text)] = vec
-    elif nodes:
-        log(f"Embedding cache: all {len(nodes)} cached, 0 to compute")
+def _embed(nodes: list, embed_model, reuse: dict[str, np.ndarray], verbose: bool, log=_log) -> np.ndarray:
+    """float32 vectors for nodes: reused where a chunk's text is unchanged, computed for the rest."""
+    if not nodes:
+        return np.zeros((0, 0), dtype=np.float32)
+    hashes = [_text_hash(n.text) for n in nodes]
+    missing = [i for i, h in enumerate(hashes) if h not in reuse]
+    log(f"Embeddings: {len(nodes) - len(missing)} reused, {len(missing)} to compute")
+    rows = [reuse.get(h) for h in hashes]
+    if missing:
+        embed_model = embed_model or _load_embed_model(verbose, log, len(missing))
+        for start in range(0, len(missing), 1024):
+            batch = missing[start:start + 1024]
+            for i, vec in zip(batch, embed_model.get_text_embedding_batch([nodes[i].text for i in batch])):
+                rows[i] = np.asarray(vec, dtype=np.float32)
+    return np.stack(rows)
 
 
 def _manifest_path(store: Path) -> Path:
@@ -287,6 +297,11 @@ def _enrich_node_text(node, root: Path | None = None) -> None:
 
 def parse_files(file_paths: list[str], embed_model, log=_log, root: Path | None = None) -> list:
     """Parse files into nodes using appropriate parsers. Returns list of nodes."""
+    from llama_index.core import SimpleDirectoryReader
+    from llama_index.core.node_parser import MarkdownNodeParser, SentenceSplitter
+    from llama_index.core.schema import TextNode
+    from llama_index.core.utils import get_tokenizer
+
     # Group files by parser type
     groups: dict[str, list[str]] = {}
     for f in file_paths:
@@ -300,10 +315,23 @@ def parse_files(file_paths: list[str], embed_model, log=_log, root: Path | None 
     for parser_type, paths in groups.items():
         log(f"Parsing {len(paths)} {parser_type} files...")
         docs = SimpleDirectoryReader(input_files=paths).load_data()
+        for doc in docs:
+            doc.set_content(_clean_text(doc.text, doc.metadata["file_path"]))
 
         if parser_type == "markdown":
-            nodes = MarkdownNodeParser().get_nodes_from_documents(docs)
-            all_nodes.extend(nodes)
+            # The model reads only a chunk's first 512 tokens, so a longer section is split like plain text.
+            tokenize = get_tokenizer()
+            for section in MarkdownNodeParser().get_nodes_from_documents(docs):
+                if len(tokenize(section.text)) <= fallback_parser.chunk_size:
+                    all_nodes.append(section)
+                    continue
+                for part in fallback_parser.get_nodes_from_documents([section]):
+                    if section.start_char_idx is None or part.start_char_idx is None:
+                        part.start_char_idx = part.end_char_idx = None
+                    else:
+                        part.start_char_idx += section.start_char_idx
+                        part.end_char_idx += section.start_char_idx
+                    all_nodes.append(part)
 
         elif parser_type in CODE_LANGUAGES:
             from llm_index.ast_chunker import chunk_file
@@ -341,6 +369,8 @@ def parse_files(file_paths: list[str], embed_model, log=_log, root: Path | None 
 
         log(f"  -> {len(all_nodes)} total nodes")
 
+    all_nodes = [n for n in all_nodes if n.text.strip()]
+
     # Compute line numbers for each node from character offsets
     # Group nodes by file to avoid re-reading the same file
     nodes_by_file: dict[str, list] = {}
@@ -352,7 +382,7 @@ def parse_files(file_paths: list[str], embed_model, log=_log, root: Path | None 
     for fp, nodes in nodes_by_file.items():
         try:
             with open(fp, "r", encoding="utf-8", errors="replace") as fh:
-                content = fh.read()
+                content = _clean_text(fh.read(), fp)
         except OSError:
             continue
 
@@ -386,9 +416,19 @@ def parse_files(file_paths: list[str], embed_model, log=_log, root: Path | None 
     return all_nodes
 
 
-def _load_embed_model(verbose: bool, log=_log):
-    """Load embedding model, suppressing noisy logs unless verbose."""
-    log(f"Loading embedding model ({EMBED_MODEL_NAME})...")
+_indexing_models: dict[str, object] = {}
+
+
+def _load_embed_model(verbose: bool, log=_log, count: int = 0):
+    """Load embedding model once per process and device, suppressing noisy logs unless verbose."""
+    import torch
+
+    # MPS embeds ~6x faster but peaks ~2 GB higher (3.1 vs 1.2 GB for 116 chunks), which pays off only for a large batch.
+    use_mps = torch.backends.mps.is_available() and (count >= 1000 or "mps" in _indexing_models)
+    device = os.environ.get("LLMDEX_EMBED_DEVICE") or ("mps" if use_mps else "cpu")
+    if device in _indexing_models:
+        return _indexing_models[device]
+    log(f"Loading embedding model ({EMBED_MODEL_NAME}, {device})...")
     if not verbose:
         for name in ("httpx", "sentence_transformers", "llama_index"):
             logging.getLogger(name).setLevel(logging.WARNING)
@@ -398,9 +438,7 @@ def _load_embed_model(verbose: bool, log=_log):
         os.dup2(_devnull, 1)
         os.dup2(_devnull, 2)
     try:
-        embed_model = make_hf_embedding()
-        Settings.embed_model = embed_model
-        Settings.llm = None
+        _indexing_models[device] = make_hf_embedding(device=device, batch_size=64)
     finally:
         if not verbose:
             os.dup2(_orig_stdout, 1)
@@ -408,7 +446,7 @@ def _load_embed_model(verbose: bool, log=_log):
             os.close(_devnull)
             os.close(_orig_stdout)
             os.close(_orig_stderr)
-    return embed_model
+    return _indexing_models[device]
 
 
 def build_index(
@@ -442,22 +480,25 @@ def _build_index_split(
     force: bool,
     parent_tags: list[str] | None,
 ) -> dict:
-    from llm_index.registry import register, set_tags, get_entry
+    from llm_index.registry import register, set_tags, get_entry, drop_indexes
 
-    if embed_model is None:
-        embed_model = _load_embed_model(verbose, log)
+    entry = get_entry(str(workspace)) or {}
+    skip = set(entry.get("skip", []))
 
     log(f"=== Root (root-level files only): {workspace} ===")
     root_result = _build_index_single(
         workspace, embed_model, log, verbose, force, root_only=True
     )
+    if root_result.get("error"):
+        shutil.rmtree(storage_dir(workspace), ignore_errors=True)
+        root_result = {"files": 0, "nodes": 0, "elapsed": 0, "directory": str(workspace)}
 
     # Discover immediate subfolders
     subfolders: list[Path] = []
     try:
         for name in sorted(os.listdir(workspace)):
             sub = workspace / name
-            if sub.is_dir() and name not in SKIP_DIRS:
+            if sub.is_dir() and name not in SKIP_DIRS and not name.startswith(".") and name not in skip:
                 subfolders.append(sub)
     except OSError:
         pass
@@ -465,8 +506,7 @@ def _build_index_split(
     children: list[str] = []
     for sub in subfolders:
         log(f"\n=== Subfolder: {sub} ===")
-        existing = get_entry(str(sub))
-        if existing is not None:
+        if str(sub) not in entry.get("children", []) and get_entry(str(sub)) is not None:
             log(f"  note: {sub} was already indexed independently -- overwriting")
 
         result = _build_index_single(
@@ -479,6 +519,11 @@ def _build_index_split(
         child_tags = list(parent_tags or []) + [f"folder:{sub.name}"]
         set_tags(str(sub), child_tags)
         children.append(str(sub))
+
+    stale = [c for c in entry.get("children", []) if c not in children]
+    if stale:
+        log(f"\nRemoving subfolder indexes no longer used: {', '.join(Path(c).name for c in stale)}")
+        drop_indexes(stale)
 
     # Update parent registry entry with children list and split flag
     register(str(workspace), children=children, split=True)
@@ -515,17 +560,17 @@ def _build_index_single(
         for f in all_files:
             log(f"  {f}")
 
+    out = storage_dir(workspace)
     if not all_files:
+        for name in LEGACY_FILES:
+            (out / name).unlink(missing_ok=True)
         return {"files": 0, "nodes": 0, "elapsed": 0, "error": "No files found"}
 
-    out = storage_dir(workspace)
-    old_manifest = {} if force else _load_manifest(out)
+    same_model = (get_entry(str(workspace)) or {}).get("embed_model") == EMBED_MODEL_NAME
+    old_manifest = _load_manifest(out) if same_model and not force and (out / INDEX_FILE).exists() else {}
     new_files, changed_files, deleted_files = _diff_files(all_files, old_manifest)
-    files_to_parse = new_files + changed_files
 
-    # Check if we can do an incremental update
-    has_existing_index = old_manifest and (out / "docstore.json").exists()
-    if has_existing_index and not files_to_parse and not deleted_files:
+    if old_manifest and not new_files and not changed_files and not deleted_files:
         elapsed = time.time() - start
         log(f"\nNo changes detected. Index is up to date ({elapsed:.1f}s)")
         return {
@@ -536,73 +581,61 @@ def _build_index_single(
             "skipped": True,
         }
 
-    if embed_model is None:
-        embed_model = _load_embed_model(verbose, log)
-
-    embed_cache = _load_embed_cache(out)
-
-    index = None
-    if has_existing_index and (len(files_to_parse) + len(deleted_files)) < len(all_files):
-        # Incremental update
-        log(f"Incremental update: {len(new_files)} new, {len(changed_files)} changed, {len(deleted_files)} deleted")
+    # The existing index is the embedding cache: chunks whose text did not change keep their vectors.
+    chunks = {"files": [], "start_lines": [], "end_lines": [], "texts": []}
+    vectors = np.zeros((0, 0), dtype=np.float32)
+    reuse: dict[str, np.ndarray] = {}
+    loaded = False
+    if same_model:
         try:
-            storage_context = StorageContext.from_defaults(persist_dir=str(out))
-            index = load_index_from_storage(storage_context, embed_model=embed_model)
+            if (out / INDEX_FILE).exists():
+                chunks, vectors = load_index(out)
+                loaded = True
+            elif (out / "default__vector_store.json").exists():
+                log("Converting the index from the llama_index JSON format...")
+                reuse = _legacy_vectors(out)
         except Exception as e:
-            # A killed run can leave a truncated/empty persisted JSON. Don't crash --
-            # fall back to a full rebuild.
+            # A killed run of an older version can leave truncated JSON, so rebuild instead of crashing.
             log(f"  existing index unreadable ({type(e).__name__}); rebuilding from scratch")
-            index = None
+    if not loaded:
+        new_files, changed_files, deleted_files = all_files, [], []
+    files_to_parse = new_files + changed_files
 
-    if index is not None:
-        # Remove nodes for changed and deleted files
-        for f in changed_files + deleted_files:
-            try:
-                index.delete_ref_doc(f, delete_from_docstore=True)
-            except (KeyError, ValueError):
-                pass
+    if old_manifest and loaded:
+        log(f"Incremental update: {len(new_files)} new, {len(changed_files)} changed, {len(deleted_files)} deleted")
+    elif loaded or reuse:
+        log("Full rebuild...")
 
-        # Parse and insert new/changed files
-        if files_to_parse:
-            new_nodes = parse_files(files_to_parse, embed_model, log=log, root=workspace)
-            _embed_with_cache(new_nodes, embed_model, embed_cache, log)
-            log(f"Inserting {len(new_nodes)} nodes...")
-            index.insert_nodes(new_nodes)
-        else:
-            new_nodes = []
+    # Rows of files that are gone or re-parsed leave the index; their vectors stay available for reuse.
+    current, reparsed = set(all_files), set(files_to_parse)
+    keep = np.array([f in current and f not in reparsed for f in chunks["files"]], dtype=bool)
+    for i in np.flatnonzero(~keep):
+        reuse[_text_hash(chunks["texts"][i])] = vectors[i]
 
-        log(f"Saving index to {out}...")
-        index.storage_context.persist(persist_dir=str(out))
+    new_nodes = parse_files(files_to_parse, embed_model, log=log, root=workspace) if files_to_parse else []
+    new_vectors = _embed(new_nodes, embed_model, reuse, verbose, log)
+    reuse = {}
 
-        _save_manifest(out, _build_manifest(all_files))
-        _save_embed_cache(out, embed_cache)
-        elapsed = time.time() - start
-        log(
-            f"\nDone! Updated {len(files_to_parse)} files ({len(new_nodes)} nodes) in {elapsed:.1f}s"
-        )
+    kept = np.flatnonzero(keep)
+    chunks = {
+        "files": [chunks["files"][i] for i in kept] + [n.metadata["file_path"] for n in new_nodes],
+        "start_lines": [chunks["start_lines"][i] for i in kept] + [n.metadata.get("start_line") for n in new_nodes],
+        "end_lines": [chunks["end_lines"][i] for i in kept] + [n.metadata.get("end_line") for n in new_nodes],
+        "texts": [chunks["texts"][i] for i in kept] + [n.text for n in new_nodes],
+    }
+    parts = [v for v in (vectors[kept], new_vectors) if len(v)]
+    vectors = np.concatenate(parts) if parts else np.zeros((0, 0), dtype=np.float32)
+
+    log(f"Saving index to {out}...")
+    _save_index(out, chunks, vectors)
+    _save_manifest(out, _build_manifest(all_files))
+    for name in LEGACY_FILES:
+        (out / name).unlink(missing_ok=True)
+    elapsed = time.time() - start
+    if old_manifest and loaded:
+        log(f"\nDone! Updated {len(files_to_parse)} files ({len(new_nodes)} nodes) in {elapsed:.1f}s")
     else:
-        # Full rebuild
-        if old_manifest:
-            log("Full rebuild...")
-        all_nodes = parse_files(all_files, embed_model, log=log, root=workspace)
-        log(f"Total: {len(all_nodes)} nodes")
-
-        _embed_with_cache(all_nodes, embed_model, embed_cache, log)
-
-        log("Building vector index...")
-        index = VectorStoreIndex(all_nodes, embed_model=embed_model)
-
-        out.mkdir(parents=True, exist_ok=True)
-        log(f"Saving index to {out}...")
-        index.storage_context.persist(persist_dir=str(out))
-
-        _save_manifest(out, _build_manifest(all_files))
-        _save_embed_cache(out, embed_cache)
-        elapsed = time.time() - start
-        log(
-            f"\nDone! Indexed {len(all_files)} files ({len(all_nodes)} nodes) in {elapsed:.1f}s"
-        )
-        new_nodes = all_nodes
+        log(f"\nDone! Indexed {len(all_files)} files ({len(new_nodes)} nodes) in {elapsed:.1f}s")
 
     # Register this folder
     from llm_index.registry import register

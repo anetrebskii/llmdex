@@ -93,10 +93,27 @@ llmdex query -t project:docs -t folder:api "authentication"
 
 Behavior:
 - Root index only contains files at the top level (no subfolder files — avoids duplication).
-- Subfolders in `SKIP_DIRS` (`node_modules`, `.git`, `dist`, ...) are skipped.
+- Subfolders whose names start with a dot, subfolders in `SKIP_DIRS` (`node_modules`, `dist`, ...) and subfolders left out with `llmdex split --skip` are skipped. `.notula` is never indexed, at any depth.
 - Subfolders with no matching files are skipped (no empty indexes).
-- `llmdex reindex` on a split parent automatically re-splits and picks up new/removed subfolders.
+- The repository's `.gitignore` applies inside subfolder indexes too.
+- `llmdex reindex` on a split parent automatically re-splits, picks up new subfolders, and removes the indexes of subfolders that were deleted, emptied or left out.
+- A split parent with no files of its own has no root index, which is not an error.
 - `llmdex remove` on a split parent cascades and removes all children + their storage.
+
+### `llmdex split` - An index per subfolder, or one index
+
+Turns an indexed folder into a split project without writing `.claude/` files into it, leaves subfolders out of search, or goes back to one index. Subfolder indexes that are no longer used are removed at once; the next `llmdex reindex` builds the new ones.
+
+```bash
+# An index per subfolder, leaving Archive and scripts out of search
+llmdex split ~/docs --skip Archive --skip scripts
+
+# Every subfolder again (the skip list replaces the previous one)
+llmdex split ~/docs
+
+# One index for the whole folder
+llmdex split ~/docs --off
+```
 
 ### `llmdex add` — Register a project without indexing
 
@@ -108,16 +125,19 @@ llmdex add /path/to/project -t project:foo
 
 ### `llmdex reindex` — Re-index all registered projects
 
-Rebuilds indexes for all previously registered projects. Re-indexing is incremental by default — only new, changed, and deleted files are reprocessed (use `-f` to force a full rebuild).
+Rebuilds indexes for all previously registered projects, or only the indexes that hold the directories you pass. Re-indexing is incremental by default — only new, changed, and deleted files are reprocessed (use `-f` to force a full rebuild).
 
 ```bash
 llmdex reindex
+
+# Only the index that holds this folder: its own index, or the nearest indexed parent
+llmdex reindex ~/docs/api
 
 # Force a full rebuild (ignore change detection)
 llmdex reindex -f
 ```
 
-Skips directories that no longer exist on disk. Split parents automatically re-split their children.
+Skips directories that no longer exist on disk. Split parents automatically re-split their children. A running query server drops its cached copy of every index that was re-indexed, so the next query reads the new files.
 
 ### `llmdex list` — List all indexed projects
 
@@ -206,9 +226,12 @@ llmdex tag /path/to/project frontend react
 
 # Show current tags for a project
 llmdex tag /path/to/project
+
+# Remove all tags
+llmdex tag /path/to/project --clear
 ```
 
-Tags replace any previously set tags (they are not additive).
+Tags replace any previously set tags (they are not additive). On a project indexed with `--split`, every subfolder gets the new tags too, each with its own `folder:<name>`.
 
 ### `llmdex describe` — Set or show an index description
 
@@ -369,6 +392,8 @@ uv tool install --force git+https://github.com/anetrebskii/llmdex
 # pipx
 pipx install --force git+https://github.com/anetrebskii/llmdex
 ```
+
+Since 0.33 each index is one `index.npz` file instead of llama_index JSON stores. Queries skip indexes built by earlier versions until `llmdex reindex` converts them, and the conversion reuses their embeddings.
 
 ## Uninstall
 

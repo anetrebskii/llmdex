@@ -10,26 +10,22 @@ import sys
 import threading
 import time
 import urllib.request
-from collections import OrderedDict
+from array import array
+from collections import Counter, OrderedDict
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from importlib.metadata import version as pkg_version, PackageNotFoundError
 from pathlib import Path
 
-from llama_index.core import (
-    StorageContext,
-    load_index_from_storage,
-    Settings,
-)
+import numpy as np
 
-from llm_index.indexer import storage_dir, EMBED_MODEL_NAME, make_hf_embedding
+from llm_index.indexer import INDEX_FILE, load_index, make_hf_embedding
+from llm_index.registry import EMBED_MODEL_NAME, storage_dir
 
 INACTIVITY_TIMEOUT = 1800  # 30 minutes
 PID_DIR = Path.home() / ".llmdex"
 DEFAULT_PORT = 7392
-# Budget is measured against the index's on-disk size; in RAM it inflates roughly 2-4x once
-# chunks, embeddings and BM25 tables are Python objects. Without it an `-a` query loads all
-# 16 GB of registered indexes and never gives the memory back.
-MAX_CACHED_MB = max(1, int(os.environ.get("LLMDEX_MAX_CACHED_MB", "1024")))
+# Budget is measured against the indexes' on-disk size. 2048 keeps all 1.4 GB of indexes loaded (server at 2.3 GB, repeat `-a` query 1 s); at 1024 every `-a` query evicted and rebuilt some of them (29 s).
+MAX_CACHED_MB = max(1, int(os.environ.get("LLMDEX_MAX_CACHED_MB", "2048")))
 
 
 def get_version() -> str:
@@ -44,6 +40,14 @@ def pid_file() -> Path:
     return PID_DIR / "server.pid"
 
 
+def _stale(directories) -> list[str]:
+    """Indexes still in the llama_index JSON format, which queries skip until they are reindexed."""
+    return [
+        d for d in directories
+        if Path(d).is_dir() and (storage_dir(Path(d)) / "docstore.json").exists() and not (storage_dir(Path(d)) / INDEX_FILE).exists()
+    ]
+
+
 def _tokenize_code(text: str) -> list[str]:
     """Tokenize text for BM25, splitting on code boundaries."""
     # Split camelCase and PascalCase
@@ -52,21 +56,53 @@ def _tokenize_code(text: str) -> list[str]:
     return re.findall(r'[a-zA-Z_][a-zA-Z0-9_]*|[0-9]+', text.lower())
 
 
+class BM25:
+    """BM25Okapi as in rank_bm25, same scores, over postings in numpy arrays instead of a dict per chunk (~4x less RAM)."""
+
+    def __init__(self, texts: list[str], k1=1.5, b=0.75, epsilon=0.25):
+        vocab, terms, counts, doc_starts = {}, array("i"), array("i"), [0]
+        doc_len = np.zeros(len(texts), dtype=np.float32)
+        for i, text in enumerate(texts):
+            tokens = _tokenize_code(text)
+            doc_len[i] = len(tokens)
+            freqs = Counter(tokens)
+            terms.extend(vocab.setdefault(t, len(vocab)) for t in freqs)
+            counts.extend(freqs.values())
+            doc_starts.append(len(terms))
+        terms = np.frombuffer(terms, dtype=np.int32)
+        order = np.argsort(terms, kind="stable")
+        self.docs = np.repeat(np.arange(len(texts), dtype=np.int32), np.diff(doc_starts))[order]
+        self.tf = np.frombuffer(counts, dtype=np.int32).astype(np.float32)[order]
+        df = np.bincount(terms, minlength=len(vocab))
+        self.ptr = np.concatenate(([0], np.cumsum(df)))
+        idf = np.log(len(texts) - df + 0.5) - np.log(df + 0.5)
+        idf[idf < 0] = epsilon * idf.mean()
+        self.idf, self.vocab, self.k1 = idf, vocab, k1
+        self.norm = k1 * (1 - b + b * doc_len / doc_len.mean())
+
+    def get_scores(self, query: list[str]) -> np.ndarray:
+        scores = np.zeros(len(self.norm))
+        for q in query:
+            t = self.vocab.get(q)
+            if t is not None:
+                docs, tf = self.docs[self.ptr[t]:self.ptr[t + 1]], self.tf[self.ptr[t]:self.ptr[t + 1]]
+                scores[docs] += self.idf[t] * tf * (self.k1 + 1) / (tf + self.norm[docs])
+        return scores
+
+
 class IndexCache:
     """Lazy-loads and caches embed model + per-workspace indexes."""
 
     def __init__(self):
         self.embed_model = None
-        self.indexes: OrderedDict[str, object] = OrderedDict()
-        self.bm25_data: OrderedDict[str, tuple] = OrderedDict()  # key -> (BM25Okapi, node_list)
+        self.indexes: OrderedDict[str, tuple] = OrderedDict()  # key -> (chunks, vectors)
+        self.bm25_data: OrderedDict[str, BM25] = OrderedDict()  # key -> BM25 over chunks["texts"]
         self.sizes: dict[str, int] = {}  # key -> on-disk bytes, the eviction cost proxy
         self.lock = threading.RLock()
 
     def get_embed_model(self):
         if self.embed_model is None:
             self.embed_model = make_hf_embedding()
-            Settings.embed_model = self.embed_model
-            Settings.llm = None
         return self.embed_model
 
     def get_index(self, workspace: Path):
@@ -75,7 +111,7 @@ class IndexCache:
             if key not in self.indexes:
                 self.get_embed_model()
                 store = storage_dir(workspace)
-                if not store.exists():
+                if not (store / INDEX_FILE).exists():
                     raise FileNotFoundError(
                         f"No index at {store}. Run: llmdex index {workspace}"
                     )
@@ -90,11 +126,8 @@ class IndexCache:
                             f"but current model is '{EMBED_MODEL_NAME}'. "
                             f"Run: llmdex reindex"
                         )
-                ctx = StorageContext.from_defaults(persist_dir=str(store))
-                self.indexes[key] = load_index_from_storage(ctx)
-                self.sizes[key] = sum(
-                    f.stat().st_size for f in store.rglob("*") if f.is_file()
-                )
+                self.indexes[key] = load_index(store)
+                self.sizes[key] = (store / INDEX_FILE).stat().st_size
             self.indexes.move_to_end(key)
             self._evict()
             return self.indexes[key]
@@ -103,12 +136,8 @@ class IndexCache:
         key = str(workspace)
         with self.lock:
             if key not in self.bm25_data:
-                index = self.get_index(workspace)
-                all_nodes = list(index.docstore.docs.values())
-                corpus = [_tokenize_code(node.get_content()) for node in all_nodes]
-                from rank_bm25 import BM25Okapi
-                bm25 = BM25Okapi(corpus)
-                self.bm25_data[key] = (bm25, all_nodes)
+                chunks, _ = self.get_index(workspace)
+                self.bm25_data[key] = BM25(chunks["texts"])
             return self.bm25_data[key]
 
     def _evict(self):
@@ -221,73 +250,51 @@ class QueryHandler(BaseHTTPRequestHandler):
     ) -> list[dict]:
         """Query a single workspace index, return list of result dicts."""
         try:
-            index = cache.get_index(workspace)
+            chunks, vectors = cache.get_index(workspace)
         except (FileNotFoundError, ValueError):
             return []
+        if not len(vectors):
+            return []
 
-        fetch_k = top_k * 3
-        if folder:
-            fetch_k *= 2
+        fetch_k = min(top_k * 3 * (2 if folder else 1), len(vectors))
 
-        # Vector retrieval
-        retriever = index.as_retriever(similarity_top_k=fetch_k)
-        vector_results = retriever.retrieve(question)
+        # Vector retrieval: embeddings are normalized, so the dot product is the cosine similarity
+        query_vector = np.asarray(cache.get_embed_model().get_query_embedding(question), dtype=np.float32)
+        scores = vectors @ query_vector
+        top = np.argpartition(-scores, fetch_k - 1)[:fetch_k]
+        vector_rows = top[np.argsort(-scores[top])]
 
         # BM25 retrieval
-        bm25_results = []
+        bm25_rows = []
         try:
-            bm25, all_nodes = cache.get_bm25(workspace)
-            query_tokens = _tokenize_code(question)
-            scores = bm25.get_scores(query_tokens)
-            top_indices = sorted(
-                range(len(scores)), key=lambda i: scores[i], reverse=True
-            )[:fetch_k]
-            bm25_results = [
-                (all_nodes[i], scores[i]) for i in top_indices if scores[i] > 0
-            ]
+            scores = cache.get_bm25(workspace).get_scores(_tokenize_code(question))
+            top = np.argpartition(-scores, fetch_k - 1)[:fetch_k]
+            bm25_rows = [i for i in top[np.argsort(-scores[top])] if scores[i] > 0]
         except Exception:
             pass  # fall back to vector-only
 
         # Reciprocal Rank Fusion
         RRF_K = 60
-        fused_scores: dict[str, float] = {}
-        node_map: dict[str, object] = {}  # node_id -> node or NodeWithScore
-
-        for rank, nws in enumerate(vector_results):
-            nid = nws.node.node_id
-            fused_scores[nid] = fused_scores.get(nid, 0) + 1.0 / (RRF_K + rank + 1)
-            node_map[nid] = nws
-
-        for rank, (node, _bm25_score) in enumerate(bm25_results):
-            nid = node.node_id
-            fused_scores[nid] = fused_scores.get(nid, 0) + 1.0 / (RRF_K + rank + 1)
-            if nid not in node_map:
-                node_map[nid] = node
+        fused_scores: dict[int, float] = {}
+        for rows in (vector_rows, bm25_rows):
+            for rank, row in enumerate(rows):
+                fused_scores[int(row)] = fused_scores.get(int(row), 0) + 1.0 / (RRF_K + rank + 1)
 
         ranked = sorted(fused_scores.items(), key=lambda x: x[1], reverse=True)
 
         items = []
-        for nid, score in ranked:
-            entry = node_map[nid]
-            # NodeWithScore (vector) vs raw BaseNode (BM25-only)
-            if hasattr(entry, "node"):
-                metadata = entry.node.metadata
-                text = entry.text
-            else:
-                metadata = entry.metadata
-                text = entry.get_content()
-
-            source = metadata.get("file_path", "unknown")
+        for row, score in ranked:
+            source = chunks["files"][row]
             if folder and not source.startswith(folder):
                 continue
 
             item = {
                 "score": round(score, 4),
                 "source": source,
-                "text": text,
+                "text": chunks["texts"][row],
             }
-            start_line = metadata.get("start_line")
-            end_line = metadata.get("end_line")
+            start_line = chunks["start_lines"][row]
+            end_line = chunks["end_lines"][row]
             if start_line is not None:
                 item["start_line"] = start_line
             if end_line is not None:
@@ -329,7 +336,7 @@ class QueryHandler(BaseHTTPRequestHandler):
                 all_items.extend(self._query_single(Path(dir_path), question, top_k, folder))
 
             all_items.sort(key=lambda x: x["score"], reverse=True)
-            self._json_response(200, {"results": all_items[:top_k]})
+            self._json_response(200, {"results": all_items[:top_k], "stale": _stale(entries)})
         elif search_all:
             # Search across all registered indexes
             from llm_index.registry import list_registered
@@ -347,14 +354,20 @@ class QueryHandler(BaseHTTPRequestHandler):
 
             # Sort by score descending, take top_k
             all_items.sort(key=lambda x: x["score"], reverse=True)
-            self._json_response(200, {"results": all_items[:top_k]})
+            self._json_response(200, {"results": all_items[:top_k], "stale": _stale(entries)})
         else:
             workspace = Path(directory).resolve()
             items = self._query_single(workspace, question, top_k, folder)
             if not items:
-                from llm_index.indexer import storage_dir
-
                 store = storage_dir(workspace)
+                if _stale([str(workspace)]):
+                    self._json_response(
+                        409,
+                        {
+                            "error": f"The index at {store} was built by an older llmdex. Run: llmdex reindex {workspace}"
+                        },
+                    )
+                    return
                 if not store.exists():
                     self._json_response(
                         404,
@@ -408,7 +421,6 @@ class QueryHandler(BaseHTTPRequestHandler):
 
     def _handle_list(self):
         from llm_index.registry import list_registered
-        from llm_index.indexer import storage_dir
 
         entries = list_registered()
         items = []
@@ -419,7 +431,7 @@ class QueryHandler(BaseHTTPRequestHandler):
                     "directory": directory,
                     "indexed_at": meta.get("indexed_at", "unknown"),
                     "tags": meta.get("tags", []),
-                    "has_index": store.exists(),
+                    "has_index": (store / INDEX_FILE).exists(),
                 }
             )
         self._json_response(200, {"folders": items})

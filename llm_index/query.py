@@ -108,6 +108,8 @@ def query_server(port: int, question: str, top_k: int, directory: str | None = N
         sys.exit(1)
 
     results = data["results"]
+    if data.get("stale"):
+        print(f"Skipped {len(data['stale'])} index(es) built by an older llmdex. Run: llmdex reindex", file=sys.stderr)
 
     if compact:
         # Minimal output for AI/automation: one line per result, no preview

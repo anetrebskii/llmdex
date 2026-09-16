@@ -1,14 +1,22 @@
 #!/usr/bin/env python3
 """Registry of indexed folders, stored at ~/.llmdex/registry.json."""
 
+import hashlib
 import json
+import os
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 
-from llm_index.indexer import storage_dir, EMBED_MODEL_NAME
-
 REGISTRY_FILE = Path.home() / ".llmdex" / "registry.json"
+DATA_DIR = Path.home() / ".llmdex" / "indexes"
+EMBED_MODEL_NAME = os.environ.get("LLMDEX_EMBED_MODEL", "intfloat/multilingual-e5-small")
+
+
+def storage_dir(workspace: Path) -> Path:
+    """Central storage: ~/.llmdex/indexes/<hash>-<name>/"""
+    key = hashlib.sha256(str(workspace).encode()).hexdigest()[:12]
+    return DATA_DIR / f"{key}-{workspace.name}"
 
 
 def _load() -> dict[str, dict]:
@@ -48,6 +56,8 @@ def register(
         entry["split"] = split
     elif "split" in existing:
         entry["split"] = existing["split"]
+    if "skip" in existing:
+        entry["skip"] = existing["skip"]
     if description is not None:
         entry["description"] = description
     elif "description" in existing:
@@ -73,6 +83,35 @@ def unregister(directory: str) -> bool:
 
     _save(data)
     return True
+
+
+def drop_indexes(directories: list[str]):
+    """Delete the index data and registry entries of these folders, whether still registered or not."""
+    data = _load()
+    for d in directories:
+        store = storage_dir(Path(d))
+        if store.exists():
+            shutil.rmtree(store)
+        data.pop(d, None)
+    _save(data)
+
+
+def set_split(directory: str, skip: list[str] | None) -> list[str] | None:
+    """Index each subfolder not in skip separately, or one index with skip=None; returns the subfolder indexes removed, or None if not registered."""
+    data = _load()
+    entry = data.get(directory)
+    if entry is None:
+        return None
+    children = entry.get("children", [])
+    removed = children if skip is None else [c for c in children if Path(c).name in skip]
+    if skip is None:
+        for key in ("split", "skip", "children"):
+            entry.pop(key, None)
+    else:
+        entry.update(split=True, skip=sorted(set(skip)), children=[c for c in children if c not in removed])
+    _save(data)
+    drop_indexes(removed)
+    return removed
 
 
 def list_registered() -> dict[str, dict]:

@@ -88,7 +88,16 @@ def cmd_reindex(args):
         for c in meta.get("children", []):
             child_of_parent.add(c)
 
-    to_reindex = [(d, m) for d, m in entries.items() if d not in child_of_parent]
+    if args.directories:
+        to_reindex = []
+        for d in args.directories:
+            found = _find_indexed_ancestor(Path(d).resolve(), entries.get)
+            if found is None:
+                print(f"Skipping (not indexed): {Path(d).resolve()}")
+            elif found not in [t for t, _ in to_reindex]:
+                to_reindex.append((found, entries[found]))
+    else:
+        to_reindex = [(d, m) for d, m in entries.items() if d not in child_of_parent]
 
     print(f"Re-indexing {len(to_reindex)} folder(s)...\n")
     for directory, meta in to_reindex:
@@ -109,13 +118,34 @@ def cmd_reindex(args):
         )
         if result.get("error"):
             print(f"  Error: {result['error']}")
+        _invalidate_server([directory, *result.get("children", [])])
         print()
+
+
+def _invalidate_server(directories):
+    import json
+    import urllib.request
+    from llm_index.server import get_running_server
+
+    running = get_running_server()
+    if not running:
+        return
+    for directory in directories:
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{running[1]}/invalidate",
+            data=json.dumps({"directory": directory}).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        try:
+            urllib.request.urlopen(req, timeout=5).read()
+        except OSError:
+            return
 
 
 def cmd_list(args):
     from pathlib import Path
-    from llm_index.registry import list_registered
-    from llm_index.indexer import storage_dir
+    from llm_index.registry import list_registered, storage_dir
+    from llm_index.indexer import INDEX_FILE
 
     entries = list_registered()
     if not entries:
@@ -124,7 +154,7 @@ def cmd_list(args):
 
     for directory, meta in entries.items():
         store = storage_dir(Path(directory))
-        exists = store.exists()
+        exists = (store / INDEX_FILE).exists()
         status = "ok" if exists else "missing index"
         indexed_at = meta.get("indexed_at", "unknown")
         tags = meta.get("tags", [])
@@ -205,7 +235,7 @@ def cmd_tag(args):
         print(f"Error: '{directory}' is not indexed.")
         sys.exit(1)
 
-    if not args.tags:
+    if not args.tags and not args.clear:
         # Show current tags
         current = entry.get("tags", [])
         if current:
@@ -215,10 +245,32 @@ def cmd_tag(args):
         return
 
     if set_tags(directory, args.tags):
-        print(f"Tags set for {directory}: {', '.join(sorted(set(args.tags)))}")
+        for child in entry.get("children", []):
+            set_tags(child, args.tags + [f"folder:{Path(child).name}"])
+        print(f"Tags set for {directory}: {', '.join(sorted(set(args.tags))) or 'none'}")
     else:
         print(f"Error: '{directory}' is not indexed.")
         sys.exit(1)
+
+
+def cmd_split(args):
+    from pathlib import Path
+    from llm_index.registry import set_split
+
+    directory = str(Path(args.directory).resolve())
+    removed = set_split(directory, None if args.off else (args.skip or []))
+    if removed is None:
+        print(f"Error: '{directory}' is not indexed.")
+        sys.exit(1)
+
+    if args.off:
+        print(f"One index: {directory}")
+    else:
+        skipping = f" (skipping {', '.join(sorted(set(args.skip)))})" if args.skip else ""
+        print(f"An index per subfolder: {directory}{skipping}")
+    for c in removed:
+        print(f"Removed subfolder index: {c}")
+    print(f"Run `llmdex reindex {directory}` to build the indexes.")
 
 
 def cmd_describe(args):
@@ -598,7 +650,12 @@ def main():
     )
 
     # llmdex reindex / re
-    p_reindex = sub.add_parser("reindex", aliases=["re"], help="Re-index all registered projects")
+    p_reindex = sub.add_parser("reindex", aliases=["re"], help="Re-index all registered projects, or only the ones holding the given directories")
+    p_reindex.add_argument(
+        "directories",
+        nargs="*",
+        help="Re-index only the indexes that hold these directories (default: all)",
+    )
     p_reindex.add_argument(
         "-V",
         "--verbose",
@@ -656,6 +713,26 @@ def main():
         "directory", nargs="?", default=".", help="Project directory (default: .)"
     )
     p_tag.add_argument("tags", nargs="*", help="Tags to set (omit to show current)")
+    p_tag.add_argument("--clear", action="store_true", help="Remove all tags")
+
+    # llmdex split
+    p_split = sub.add_parser(
+        "split",
+        help="Index each immediate subfolder of an indexed project separately, or go back to one index",
+    )
+    p_split.add_argument(
+        "directory", nargs="?", default=".", help="Project directory (default: .)"
+    )
+    split_mode = p_split.add_mutually_exclusive_group()
+    split_mode.add_argument(
+        "--skip",
+        action="append",
+        metavar="NAME",
+        help="Subfolder to leave out of search (can be repeated)",
+    )
+    split_mode.add_argument(
+        "--off", action="store_true", help="Go back to one index for the whole project"
+    )
 
     # llmdex tags
     sub.add_parser("tags", help="List all tags and their indexes")
@@ -729,6 +806,7 @@ def main():
         "q": cmd_query,
         "tag": cmd_tag,
         "tags": cmd_tags,
+        "split": cmd_split,
         "describe": cmd_describe,
         "catalog": cmd_catalog,
         "cat": cmd_catalog,
