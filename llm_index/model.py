@@ -104,6 +104,8 @@ def download_model(log=print) -> Path:
                             f.write(block)
                             have += len(block)
                             report(finished + have)
+                if have < size:
+                    raise ConnectionError(f"Connection closed after {have // 1_000_000} MB of {size // 1_000_000} MB of {name}")
             if not sha or _sha256(part) == sha:
                 break
             part.unlink()
