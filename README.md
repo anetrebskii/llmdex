@@ -139,6 +139,14 @@ llmdex reindex -f
 
 Skips directories that no longer exist on disk. Split parents automatically re-split their children. A running query server drops its cached copy of every index that was re-indexed, so the next query reads the new files.
 
+### `llmdex model` - Download the embedding model
+
+Indexing downloads the model the first time it needs it. This downloads it without indexing anything, printing "Downloading the model: 212 MB of 487 MB" as it goes, and resumes a partial download. When the download fails it prints an `Error:` line and exits with 1.
+
+```bash
+llmdex model
+```
+
 ### `llmdex list` — List all indexed projects
 
 ```bash

@@ -142,6 +142,17 @@ def _invalidate_server(directories):
             return
 
 
+def cmd_model(args):
+    from llm_index.model import download_model
+
+    try:
+        path = download_model()
+    except Exception as e:
+        print(f"Error: {e}")
+        sys.exit(1)
+    print(f"Model: {path}")
+
+
 def cmd_list(args):
     from pathlib import Path
     from llm_index.registry import list_registered, storage_dir
@@ -669,6 +680,9 @@ def main():
         help="Force full rebuild, ignoring change detection",
     )
 
+    # llmdex model
+    sub.add_parser("model", help="Download the embedding model if it is not on disk yet")
+
     # llmdex list / ls
     sub.add_parser("list", aliases=["ls"], help="List all indexed projects")
 
@@ -798,6 +812,7 @@ def main():
         "add": cmd_add,
         "reindex": cmd_reindex,
         "re": cmd_reindex,
+        "model": cmd_model,
         "list": cmd_list,
         "ls": cmd_list,
         "remove": cmd_remove,
