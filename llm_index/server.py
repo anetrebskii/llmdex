@@ -18,7 +18,8 @@ from pathlib import Path
 
 import numpy as np
 
-from llm_index.indexer import INDEX_FILE, load_index, make_hf_embedding
+from llm_index.indexer import INDEX_FILE, load_index
+from llm_index.model import shared_embedder
 from llm_index.registry import EMBED_MODEL_NAME, storage_dir
 
 INACTIVITY_TIMEOUT = 1800  # 30 minutes
@@ -102,7 +103,7 @@ class IndexCache:
 
     def get_embed_model(self):
         if self.embed_model is None:
-            self.embed_model = make_hf_embedding()
+            self.embed_model = shared_embedder()
         return self.embed_model
 
     def get_index(self, workspace: Path):
@@ -259,7 +260,7 @@ class QueryHandler(BaseHTTPRequestHandler):
         fetch_k = min(top_k * 3 * (2 if folder else 1), len(vectors))
 
         # Vector retrieval: embeddings are normalized, so the dot product is the cosine similarity
-        query_vector = np.asarray(cache.get_embed_model().get_query_embedding(question), dtype=np.float32)
+        query_vector = cache.get_embed_model().embed_query(question)
         scores = vectors @ query_vector
         top = np.argpartition(-scores, fetch_k - 1)[:fetch_k]
         vector_rows = top[np.argsort(-scores[top])]
@@ -513,6 +514,12 @@ def start_server(port: int = DEFAULT_PORT, timeout: int = INACTIVITY_TIMEOUT):
     server.serve_forever()
 
 
+def server_command(*args: str) -> list[str]:
+    """How to start the server in the background. A frozen llmdex has no `python -m`, so it goes through its own CLI."""
+    launcher = [sys.executable, "server"] if getattr(sys, "frozen", False) else [sys.executable, "-m", "llm_index.server"]
+    return [*launcher, "--serve", *args]
+
+
 def _detached_spawn(cmd: list[str]):
     """Popen a background process that survives the launching process's exit.
 
@@ -686,18 +693,7 @@ def main():
 
 def _launch_background(port: int, timeout: int):
     """Start server as a background process, wait for it, print status."""
-    _detached_spawn(
-        [
-            sys.executable,
-            "-m",
-            "llm_index.server",
-            "--serve",
-            "-p",
-            str(port),
-            "-t",
-            str(timeout),
-        ]
-    )
+    _detached_spawn(server_command("-p", str(port), "-t", str(timeout)))
 
     for _ in range(60):
         time.sleep(0.5)

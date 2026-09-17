@@ -3,43 +3,37 @@
 
 import hashlib
 import json
-import logging
 import os
 import re
 import shutil
 import subprocess
 import time
+from bisect import bisect_left, bisect_right
 from pathlib import Path
 
 import numpy as np
 
 from llm_index.registry import EMBED_MODEL_NAME, get_entry, storage_dir
 
-# llama_index and torch are imported where they are used: `llmdex query` and a reindex with no changes never need them.
-
-# CPU by default: on MPS the model's Metal allocation (~1 GB) stays resident for the server's lifetime.
-EMBED_DEVICE = os.environ.get("LLMDEX_EMBED_DEVICE", "cpu")
+# The model is loaded where it is used: `llmdex query` and a reindex with no changes never need it.
 
 # One file per index, replaced atomically: chunk text, file and lines as JSON, and a float32 row per chunk.
 INDEX_FILE = "index.npz"
 # What the llama_index JSON format left behind before index.npz.
 LEGACY_FILES = ("docstore.json", "default__vector_store.json", "index_store.json", "graph_store.json", "image__vector_store.json", "embed_cache.json")
 
+# The model reads 512 tokens; the "passage: " prefix and the "# file: ... | section: ..." line take the rest.
+CHUNK_TOKENS = 450
+OVERLAP_TOKENS = 50
+# Where a chunk may end, widest first: paragraphs, sentences, clauses, words. Tokens are the last resort.
+BREAKS = (
+    re.compile(r"\n[ \t]*\n"),
+    re.compile(r"(?<=[.!?\u3002\uff01\uff1f])\s+"),
+    re.compile(r"(?<=[,;:])\s+|\n"),
+    re.compile(r"\s+"),
+)
+HEADER = re.compile(r"^(#+)[^\S\r\n](.*)")
 
-def make_hf_embedding(model_name=None, device=EMBED_DEVICE, batch_size=10):
-    """Build the HuggingFaceEmbedding. e5 models need query/passage prefixes to perform well."""
-    from llama_index.embeddings.huggingface import HuggingFaceEmbedding
-
-    model_name = model_name or EMBED_MODEL_NAME
-    kwargs = {"model_name": model_name, "device": device, "embed_batch_size": batch_size}
-    if "e5" in model_name.lower():
-        kwargs["query_instruction"] = "query: "
-        kwargs["text_instruction"] = "passage: "
-    try:
-        # A cached model loads in 0.8 s instead of 8 s, because the hub is not asked for updates; the hub is used only when the model is missing.
-        return HuggingFaceEmbedding(**kwargs, local_files_only=True)
-    except OSError:
-        return HuggingFaceEmbedding(**kwargs)
 
 SKIP_DIRS = {
     "node_modules",
@@ -198,20 +192,18 @@ def _text_hash(text: str) -> str:
     return hashlib.md5((EMBED_MODEL_NAME + "\0" + text).encode()).hexdigest()
 
 
-def _embed(nodes: list, embed_model, reuse: dict[str, np.ndarray], verbose: bool, log=_log) -> np.ndarray:
+def _embed(nodes: list[dict], embed_model, reuse: dict[str, np.ndarray], log=_log) -> np.ndarray:
     """float32 vectors for nodes: reused where a chunk's text is unchanged, computed for the rest."""
     if not nodes:
         return np.zeros((0, 0), dtype=np.float32)
-    hashes = [_text_hash(n.text) for n in nodes]
+    hashes = [_text_hash(n["text"]) for n in nodes]
     missing = [i for i, h in enumerate(hashes) if h not in reuse]
     log(f"Embeddings: {len(nodes) - len(missing)} reused, {len(missing)} to compute")
     rows = [reuse.get(h) for h in hashes]
-    if missing:
-        embed_model = embed_model or _load_embed_model(verbose, log, len(missing))
-        for start in range(0, len(missing), 1024):
-            batch = missing[start:start + 1024]
-            for i, vec in zip(batch, embed_model.get_text_embedding_batch([nodes[i].text for i in batch])):
-                rows[i] = np.asarray(vec, dtype=np.float32)
+    for start in range(0, len(missing), 1024):
+        batch = missing[start:start + 1024]
+        for i, vec in zip(batch, embed_model.embed_texts([nodes[i]["text"] for i in batch])):
+            rows[i] = vec
     return np.stack(rows)
 
 
@@ -268,185 +260,105 @@ def _diff_files(
     return new, changed, deleted
 
 
-def _enrich_node_text(node, root: Path | None = None) -> None:
-    """Prepend file/language context to node text for better embeddings."""
-    file_path = node.metadata.get("file_path", "")
-    ext = os.path.splitext(file_path)[1].lower()
-    language = PARSER_MAP.get(ext, "text")
+def _pieces(text: str, start: int, end: int, starts: list[int], level: int = 0) -> list[tuple[int, int]]:
+    """Consecutive spans covering text[start:end], each at most CHUNK_TOKENS, cut at the widest break that makes them fit."""
+    tokens = bisect_left(starts, end) - bisect_left(starts, start)
+    if tokens <= CHUNK_TOKENS:
+        return [(start, end)]
+    if level == len(BREAKS):
+        first = bisect_left(starts, start)
+        bounds = [start] + [starts[i] for i in range(first + CHUNK_TOKENS, first + tokens, CHUNK_TOKENS)] + [end]
+        return list(zip(bounds, bounds[1:]))
+    bounds = [start] + [m.end() for m in BREAKS[level].finditer(text, start, end) if start < m.end() < end] + [end]
+    return [p for a, b in zip(bounds, bounds[1:]) for p in _pieces(text, a, b, starts, level + 1)]
 
-    # Use relative path if root is provided
-    if root and file_path:
+
+def _split(text: str, start: int, end: int, starts: list[int]) -> list[tuple[int, int]]:
+    """Chunks of text[start:end] of up to CHUNK_TOKENS, each beginning with the last OVERLAP_TOKENS or less of the one before."""
+    size = lambda a, b: bisect_left(starts, b) - bisect_left(starts, a)  # noqa: E731
+    chunks, current = [], []
+    for a, b in _pieces(text, start, end, starts):
+        if current and size(current[0][0], b) > CHUNK_TOKENS:
+            chunks.append((current[0][0], current[-1][1]))
+            tail = current[-1][1]
+            current = [p for p in current if size(p[0], tail) <= OVERLAP_TOKENS]
+            while current and size(current[0][0], b) > CHUNK_TOKENS:
+                current.pop(0)
+        current.append((a, b))
+    if current:
+        chunks.append((current[0][0], current[-1][1]))
+    return chunks
+
+
+def _markdown_sections(text: str) -> list[tuple[int, int, str]]:
+    """(start, end, header path) per section: a new one at every header outside a code fence, the path naming the headers above it."""
+    sections, stack, start, pos, fence = [], [], 0, 0, False
+    for line in text.splitlines(keepends=True):
+        match = None if fence else HEADER.match(line)
+        if line.lstrip().startswith("```"):
+            fence = not fence
+        elif match:
+            if text[start:pos].strip():
+                sections.append((start, pos, "/" + "".join(f"{h}/" for _, h in stack[:-1])))
+            level = len(match.group(1))
+            while stack and stack[-1][0] >= level:
+                stack.pop()
+            stack.append((level, match.group(2).strip()))
+            start = pos
+        pos += len(line)
+    if text[start:pos].strip():
+        sections.append((start, pos, "/" + "".join(f"{h}/" for _, h in stack[:-1])))
+    return sections
+
+
+def parse_files(file_paths: list[str], embed_model, log=_log, root: Path | None = None) -> list[dict]:
+    """Chunks of the files as {"file", "start_line", "end_line", "text"}, the text headed by the file and its section or symbol."""
+    from llm_index.ast_chunker import chunk_file
+
+    nodes = []
+    fallbacks = 0
+    for fp in file_paths:
+        language = PARSER_MAP.get(os.path.splitext(fp)[1].lower(), "text")
+        rel = fp
+        if root:
+            try:
+                rel = str(Path(fp).relative_to(root))
+            except ValueError:
+                pass
+
+        if language in CODE_LANGUAGES:
+            chunks = chunk_file(fp, language)
+            for chunk in chunks:
+                if chunk.text.strip():
+                    context = f"symbol: {chunk.symbol}" if chunk.symbol else f"language: {language}"
+                    nodes.append({"file": fp, "start_line": chunk.start_line, "end_line": chunk.end_line, "text": f"# file: {rel} | {context}\n{chunk.text}"})
+            if chunks:
+                continue
+            fallbacks += 1
+
         try:
-            file_path = str(Path(file_path).relative_to(root))
-        except ValueError:
-            pass
-
-    parts = [f"file: {file_path}"]
-
-    if language == "markdown":
-        header = node.metadata.get("header_path")
-        if header:
-            parts.append(f"section: {header}")
-    elif node.metadata.get("symbol"):
-        parts.append(f"symbol: {node.metadata['symbol']}")
-    else:
-        parts.append(f"language: {language}")
-
-    node.text = "# " + " | ".join(parts) + "\n" + node.text
-
-
-def parse_files(file_paths: list[str], embed_model, log=_log, root: Path | None = None) -> list:
-    """Parse files into nodes using appropriate parsers. Returns list of nodes."""
-    from llama_index.core import SimpleDirectoryReader
-    from llama_index.core.node_parser import MarkdownNodeParser, SentenceSplitter
-    from llama_index.core.schema import TextNode
-    from llama_index.core.utils import get_tokenizer
-
-    # Group files by parser type
-    groups: dict[str, list[str]] = {}
-    for f in file_paths:
-        ext = os.path.splitext(f)[1].lower()
-        parser_type = PARSER_MAP.get(ext, "text")
-        groups.setdefault(parser_type, []).append(f)
-
-    all_nodes = []
-    fallback_parser = SentenceSplitter(chunk_size=512, chunk_overlap=50)
-
-    for parser_type, paths in groups.items():
-        log(f"Parsing {len(paths)} {parser_type} files...")
-        docs = SimpleDirectoryReader(input_files=paths).load_data()
-        for doc in docs:
-            doc.set_content(_clean_text(doc.text, doc.metadata["file_path"]))
-
-        if parser_type == "markdown":
-            # The model reads only a chunk's first 512 tokens, so a longer section is split like plain text.
-            tokenize = get_tokenizer()
-            for section in MarkdownNodeParser().get_nodes_from_documents(docs):
-                if len(tokenize(section.text)) <= fallback_parser.chunk_size:
-                    all_nodes.append(section)
-                    continue
-                for part in fallback_parser.get_nodes_from_documents([section]):
-                    if section.start_char_idx is None or part.start_char_idx is None:
-                        part.start_char_idx = part.end_char_idx = None
-                    else:
-                        part.start_char_idx += section.start_char_idx
-                        part.end_char_idx += section.start_char_idx
-                    all_nodes.append(part)
-
-        elif parser_type in CODE_LANGUAGES:
-            from llm_index.ast_chunker import chunk_file
-
-            skipped = 0
-            for fp in paths:
-                chunks = chunk_file(fp, parser_type)
-                if not chunks:
-                    # Fallback: load via SimpleDirectoryReader + sentence splitter
-                    doc = SimpleDirectoryReader(input_files=[fp]).load_data()
-                    nodes = fallback_parser.get_nodes_from_documents(doc)
-                    all_nodes.extend(nodes)
-                    skipped += 1
-                    continue
-                for chunk in chunks:
-                    node = TextNode(
-                        text=chunk.text,
-                        metadata={
-                            "file_path": fp,
-                            "file_name": os.path.basename(fp),
-                            "start_line": chunk.start_line,
-                            "end_line": chunk.end_line,
-                            "symbol": chunk.symbol,
-                        },
-                    )
-                    node.excluded_embed_metadata_keys = ["file_path", "file_name", "start_line", "end_line", "symbol"]
-                    node.excluded_llm_metadata_keys = ["file_path", "file_name", "start_line", "end_line", "symbol"]
-                    all_nodes.append(node)
-            if skipped:
-                log(f"  -> {skipped} files used fallback parser")
-
-        else:  # text
-            nodes = fallback_parser.get_nodes_from_documents(docs)
-            all_nodes.extend(nodes)
-
-        log(f"  -> {len(all_nodes)} total nodes")
-
-    all_nodes = [n for n in all_nodes if n.text.strip()]
-
-    # Compute line numbers for each node from character offsets
-    # Group nodes by file to avoid re-reading the same file
-    nodes_by_file: dict[str, list] = {}
-    for node in all_nodes:
-        fp = node.metadata.get("file_path")
-        if fp and (node.start_char_idx is not None or node.end_char_idx is not None):
-            nodes_by_file.setdefault(fp, []).append(node)
-
-    for fp, nodes in nodes_by_file.items():
-        try:
-            with open(fp, "r", encoding="utf-8", errors="replace") as fh:
-                content = _clean_text(fh.read(), fp)
+            with open(fp, encoding="utf-8", errors="replace") as f:
+                text = _clean_text(f.read(), fp)
         except OSError:
             continue
+        starts = embed_model.token_starts(text)
+        newlines = [i for i, ch in enumerate(text) if ch == "\n"]
+        if language == "markdown":
+            spans = [(a, b, f"section: {path}") for s, e, path in _markdown_sections(text) for a, b in _split(text, s, e, starts)]
+        else:
+            spans = [(a, b, f"language: {language}") for a, b in _split(text, 0, len(text), starts)]
+        for a, b, context in spans:
+            body = text[a:b]
+            a += len(body) - len(body.lstrip())
+            b -= len(body) - len(body.rstrip())
+            if a >= b:
+                continue
+            nodes.append({"file": fp, "start_line": bisect_right(newlines, a - 1) + 1, "end_line": bisect_right(newlines, b - 2) + 1, "text": f"# file: {rel} | {context}\n{text[a:b]}"})
 
-        # Build cumulative newline positions once per file
-        newlines = [-1]  # sentinel: "line 1 starts after index -1"
-        for i, ch in enumerate(content):
-            if ch == "\n":
-                newlines.append(i)
-
-        def _char_to_line(idx: int) -> int:
-            # Binary search for the line number
-            lo, hi = 0, len(newlines) - 1
-            while lo <= hi:
-                mid = (lo + hi) // 2
-                if newlines[mid] < idx:
-                    lo = mid + 1
-                else:
-                    hi = mid - 1
-            return lo  # 1-based line number
-
-        for node in nodes:
-            if node.start_char_idx is not None:
-                node.metadata["start_line"] = _char_to_line(node.start_char_idx)
-            if node.end_char_idx is not None:
-                node.metadata["end_line"] = _char_to_line(node.end_char_idx)
-
-    # Enrich node text with file/language context for better embeddings
-    for node in all_nodes:
-        _enrich_node_text(node, root)
-
-    return all_nodes
-
-
-_indexing_models: dict[str, object] = {}
-
-
-def _load_embed_model(verbose: bool, log=_log, count: int = 0):
-    """Load embedding model once per process and device, suppressing noisy logs unless verbose."""
-    import torch
-
-    # MPS embeds ~6x faster but peaks ~2 GB higher (3.1 vs 1.2 GB for 116 chunks), which pays off only for a large batch.
-    use_mps = torch.backends.mps.is_available() and (count >= 1000 or "mps" in _indexing_models)
-    device = os.environ.get("LLMDEX_EMBED_DEVICE") or ("mps" if use_mps else "cpu")
-    if device in _indexing_models:
-        return _indexing_models[device]
-    log(f"Loading embedding model ({EMBED_MODEL_NAME}, {device})...")
-    if not verbose:
-        for name in ("httpx", "sentence_transformers", "llama_index"):
-            logging.getLogger(name).setLevel(logging.WARNING)
-        _orig_stdout = os.dup(1)
-        _orig_stderr = os.dup(2)
-        _devnull = os.open(os.devnull, os.O_WRONLY)
-        os.dup2(_devnull, 1)
-        os.dup2(_devnull, 2)
-    try:
-        _indexing_models[device] = make_hf_embedding(device=device, batch_size=64)
-    finally:
-        if not verbose:
-            os.dup2(_orig_stdout, 1)
-            os.dup2(_orig_stderr, 2)
-            os.close(_devnull)
-            os.close(_orig_stdout)
-            os.close(_orig_stderr)
-    return _indexing_models[device]
+    if fallbacks:
+        log(f"  -> {fallbacks} code files split as text")
+    log(f"  -> {len(nodes)} chunks from {len(file_paths)} files")
+    return nodes
 
 
 def build_index(
@@ -612,16 +524,20 @@ def _build_index_single(
     for i in np.flatnonzero(~keep):
         reuse[_text_hash(chunks["texts"][i])] = vectors[i]
 
+    if files_to_parse and embed_model is None:
+        from llm_index.model import shared_embedder
+
+        embed_model = shared_embedder(log)
     new_nodes = parse_files(files_to_parse, embed_model, log=log, root=workspace) if files_to_parse else []
-    new_vectors = _embed(new_nodes, embed_model, reuse, verbose, log)
+    new_vectors = _embed(new_nodes, embed_model, reuse, log)
     reuse = {}
 
     kept = np.flatnonzero(keep)
     chunks = {
-        "files": [chunks["files"][i] for i in kept] + [n.metadata["file_path"] for n in new_nodes],
-        "start_lines": [chunks["start_lines"][i] for i in kept] + [n.metadata.get("start_line") for n in new_nodes],
-        "end_lines": [chunks["end_lines"][i] for i in kept] + [n.metadata.get("end_line") for n in new_nodes],
-        "texts": [chunks["texts"][i] for i in kept] + [n.text for n in new_nodes],
+        "files": [chunks["files"][i] for i in kept] + [n["file"] for n in new_nodes],
+        "start_lines": [chunks["start_lines"][i] for i in kept] + [n["start_line"] for n in new_nodes],
+        "end_lines": [chunks["end_lines"][i] for i in kept] + [n["end_line"] for n in new_nodes],
+        "texts": [chunks["texts"][i] for i in kept] + [n["text"] for n in new_nodes],
     }
     parts = [v for v in (vectors[kept], new_vectors) if len(v)]
     vectors = np.concatenate(parts) if parts else np.zeros((0, 0), dtype=np.float32)

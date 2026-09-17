@@ -44,7 +44,7 @@ llmdex index
 llmdex query "how does authentication work"
 ```
 
-That's it. The first query takes ~25s (model loading), all subsequent queries are instant.
+That's it. The first index downloads the embedding model once, about 490 MB, into `~/.llmdex/models`. Queries after that are instant.
 
 ### Using with Claude Code
 
@@ -410,10 +410,10 @@ rm -rf ~/.llmdex
 
 ## Advanced: changing the embedding model
 
-By default llmdex embeds with `intfloat/multilingual-e5-small` — a compact multilingual model that handles non-English content (Russian, etc.) as well as code. Override it with the `LLMDEX_EMBED_MODEL` environment variable to use any [Hugging Face sentence-transformers](https://huggingface.co/models?library=sentence-transformers) model:
+By default llmdex embeds with `intfloat/multilingual-e5-small` — a compact multilingual model that handles non-English content (Russian, etc.) as well as code. Override it with the `LLMDEX_EMBED_MODEL` environment variable to use any Hugging Face model whose repository has an ONNX export in `onnx/model.onnx`:
 
 ```bash
-# Higher quality, larger/slower
+# Higher quality, larger/slower (~1.1 GB)
 LLMDEX_EMBED_MODEL=intfloat/multilingual-e5-base llmdex index <dir>
 
 # Top multilingual quality, heaviest (~2.3 GB, more RAM)

@@ -16,6 +16,7 @@ from llm_index.server import (
     health_check,
     stop_server,
     _detached_spawn,
+    server_command,
 )
 
 # A tag or -a query loads every matching index that is not cached; 21 indexes takes ~2 min.
@@ -24,7 +25,7 @@ QUERY_TIMEOUT = int(os.environ.get("LLMDEX_QUERY_TIMEOUT", "600"))
 
 def _start_new_server() -> int:
     """Launch server subprocess and wait for it to come up. Returns port."""
-    _detached_spawn([sys.executable, "-m", "llm_index.server", "--serve"])
+    _detached_spawn(server_command())
 
     for _ in range(60):
         time.sleep(0.5)

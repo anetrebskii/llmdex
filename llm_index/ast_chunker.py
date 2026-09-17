@@ -7,19 +7,30 @@ line counts. Each chunk is a semantic unit (one function, one class, etc.).
 
 from __future__ import annotations
 
+import importlib
 from dataclasses import dataclass
 
 from functools import lru_cache
 
-from tree_sitter import Parser
-from tree_sitter_language_pack import get_language
+from tree_sitter import Language, Parser
+
+# One package per language: tree-sitter-language-pack carried 172 grammars, 351 MB, for these eight.
+GRAMMARS = {
+    "python": ("tree_sitter_python", "language"),
+    "javascript": ("tree_sitter_javascript", "language"),
+    "typescript": ("tree_sitter_typescript", "language_typescript"),
+    "rust": ("tree_sitter_rust", "language"),
+    "go": ("tree_sitter_go", "language"),
+    "java": ("tree_sitter_java", "language"),
+    "csharp": ("tree_sitter_c_sharp", "language"),
+    "dart": ("tree_sitter_dart", "language"),
+}
 
 
 @lru_cache(maxsize=None)
 def _parser(language: str) -> Parser:
-    # Build via the modern tree_sitter binding. get_parser() can return a stale
-    # Parser whose parse() expects str instead of bytes.
-    return Parser(get_language(language))
+    module, function = GRAMMARS[language]
+    return Parser(Language(getattr(importlib.import_module(module), function)()))
 
 # Top-level node types to extract as individual chunks, per language.
 # Anything not listed here gets grouped into a "preamble" chunk.
