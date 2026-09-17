@@ -8,7 +8,9 @@ version = "0.34.0"
 description = "Local semantic search for project files"
 requires-python = ">=3.10"
 dependencies = [
-    "onnxruntime",
+    # ONNX Runtime stopped publishing Intel Mac wheels after 1.23.2, and its vectors match the later versions.
+    "onnxruntime; sys_platform != 'darwin' or platform_machine != 'x86_64'",
+    "onnxruntime==1.23.2; sys_platform == 'darwin' and platform_machine == 'x86_64'",
     "tokenizers",
     "tree-sitter==0.25.2",
     "tree-sitter-python",
