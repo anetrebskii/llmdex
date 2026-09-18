@@ -222,9 +222,11 @@ Top 5 results:
    4	Set the following environment variables...
 ```
 
-Results are printed best first and carry no score. The fused rank the search sorts by has no meaning outside one result list, and the embedding model gives no absolute measure of relevance -- a nonsense query scores as high as a good one. The `/query` HTTP response still carries `score` for anything that wants the raw number.
+Results come best first and carry no number, in the output and in the `/query` JSON alike. The fused rank the search sorts by has no meaning outside one result list, and the embedding model gives no absolute measure of relevance -- a nonsense query scores as high as a real one, so there is nothing honest to print.
 
-Each result shows a relevance score (0-1), the full file path, and a text preview.
+Each result is the file path, the line range and the chunk itself.
+
+Across several indexes -- `-a`, or `-t` matching more than one -- the merge sorts on similarity, which is the only quantity comparable between them. Within one index the two retrievers are fused by rank (RRF), which is what brings exact keyword hits up next to semantic ones.
 
 You can also filter queries by tag (see below):
 

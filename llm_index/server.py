@@ -64,6 +64,13 @@ TEST_EXT = (".ts", ".tsx", ".js", ".jsx", ".py", ".rs", ".go", ".java", ".cs", "
 TEST_PENALTY = 0.5
 
 
+def _public(items: list[dict]) -> list[dict]:
+    """Drop the key the merge sorts on: the number means nothing once the list is ordered."""
+    for item in items:
+        item.pop("similarity", None)
+    return items
+
+
 def _tokenize_code(text: str) -> list[str]:
     """Tokenize text for BM25, splitting on code boundaries."""
     # Split camelCase and PascalCase
@@ -276,9 +283,9 @@ class QueryHandler(BaseHTTPRequestHandler):
 
         # Vector retrieval: embeddings are normalized, so the dot product is the cosine similarity
         query_vector = cache.get_embed_model().embed_query(question)
-        scores = vectors @ query_vector
-        top = np.argpartition(-scores, fetch_k - 1)[:fetch_k]
-        vector_rows = top[np.argsort(-scores[top])]
+        similarity = vectors @ query_vector
+        top = np.argpartition(-similarity, fetch_k - 1)[:fetch_k]
+        vector_rows = top[np.argsort(-similarity[top])]
 
         # BM25 retrieval
         bm25_rows = []
@@ -311,7 +318,9 @@ class QueryHandler(BaseHTTPRequestHandler):
                 continue
 
             item = {
-                "score": round(score, 4),
+                # The list is already in fused-rank order; the similarity is what a merge across indexes
+                # can sort on, since fused ranks tie at the top of every index. Dropped before it goes out.
+                "similarity": float(similarity[row]),
                 "source": source,
                 "text": chunks["texts"][row],
             }
@@ -357,8 +366,8 @@ class QueryHandler(BaseHTTPRequestHandler):
             for dir_path in entries:
                 all_items.extend(self._query_single(Path(dir_path), question, top_k, folder))
 
-            all_items.sort(key=lambda x: x["score"], reverse=True)
-            self._json_response(200, {"results": all_items[:top_k], "stale": _stale(entries)})
+            all_items.sort(key=lambda x: x["similarity"], reverse=True)
+            self._json_response(200, {"results": _public(all_items[:top_k]), "stale": _stale(entries)})
         elif search_all:
             # Search across all registered indexes
             from llm_index.registry import list_registered
@@ -374,9 +383,9 @@ class QueryHandler(BaseHTTPRequestHandler):
             for dir_path in entries:
                 all_items.extend(self._query_single(Path(dir_path), question, top_k, folder))
 
-            # Sort by score descending, take top_k
-            all_items.sort(key=lambda x: x["score"], reverse=True)
-            self._json_response(200, {"results": all_items[:top_k], "stale": _stale(entries)})
+            # Only the similarity is comparable between indexes; the fused rank ties at the top of each.
+            all_items.sort(key=lambda x: x["similarity"], reverse=True)
+            self._json_response(200, {"results": _public(all_items[:top_k]), "stale": _stale(entries)})
         else:
             workspace = Path(directory).resolve()
             items = self._query_single(workspace, question, top_k, folder)
@@ -398,7 +407,7 @@ class QueryHandler(BaseHTTPRequestHandler):
                         },
                     )
                     return
-            self._json_response(200, {"results": items})
+            self._json_response(200, {"results": _public(items)})
 
     def _handle_invalidate(self):
         body = self._read_body()
