@@ -116,7 +116,7 @@ def query_server(port: int, question: str, top_k: int, directory: str | None = N
         # Minimal output for AI/automation: one line per result, no preview
         for item in results:
             loc = _make_loc(item["source"], item.get("start_line"), item.get("end_line"))
-            print(f"[{item['score']:.3f}] {loc}")
+            print(loc)
         return
 
     print(f"Query: {question}")
@@ -124,7 +124,7 @@ def query_server(port: int, question: str, top_k: int, directory: str | None = N
 
     for i, item in enumerate(results, 1):
         loc = _make_loc(item["source"], item.get("start_line"), item.get("end_line"))
-        print(f"{i}. [{item['score']:.3f}] {loc}")
+        print(f"{i}. {loc}")
         # Show full chunk with line numbers
         start = item.get("start_line", 1)
         lines = item["text"].split("\n")

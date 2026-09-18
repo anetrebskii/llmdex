@@ -28,6 +28,7 @@ def cmd_index(args):
         verbose=args.verbose,
         split=args.split,
         parent_tags=args.tag,
+        exclude=args.exclude,
     )
 
     if result.get("error"):
@@ -415,6 +416,13 @@ Trigger whenever the user's request sounds like retrieval or recall:
 - "which project uses X?", "do we have an example of Y anywhere?"
 - Any question about past decisions, meetings, specs, or prior work.
 
+## Writing the query
+
+- **Ask code in English**, whatever language the user asked in. Identifiers, comments and paths are English, and a question in another language drifts off them: "где создаётся сессия" came back with the DbContext and test files, "where is the session created" put `CreateSessionHandler.cs` first. Translate the intent and keep any identifier the user named as it is.
+- **Ask notes in the language they are written in.** A Russian knowledge base answers a Russian question well.
+- Ask what the code does, not for the file you expect -- "where is the refresh token validated", not "AuthService".
+- Narrow with `-f <prefix>` when one part of the tree holds the answer: `-f src`, `-f docs/api`.
+
 ## External sources may be indexed locally
 
 GitHub issues/PRs, Slack threads, Confluence/Notion pages, and similar artifacts are often downloaded and indexed via llmdex (look for tags like `source:github`, `source:slack`, `source:confluence`, or `type:issues`). **Do not assume an external URL means you must reach for `gh` / WebFetch.**
@@ -500,15 +508,17 @@ Combine them. "Find meeting notes from the formula project" -> `-t project:formu
 ## Decision checklist before answering a retrieval question
 
 - [ ] Did I run `llmdex catalog` (or do I already know the relevant index from this session)?
+- [ ] Is the query written in the language of the content -- English for code?
 - [ ] Did I pick the most specific tag combo, not just the current directory?
 - [ ] Did I try `-a` only after tag-based search returned nothing useful?
 - [ ] Am I resisting the urge to run `llmdex index` just because a query was empty?
 
-If all four are checked and there are still no results, report "nothing indexed matches" -- don't auto-index.
+If every box is checked and there are still no results, report "nothing indexed matches" -- don't auto-index.
 
 ## Other rules
 
 - Results use hybrid search (BM25 + vector): exact keyword matches and semantic matches both surface.
+- Test files are ranked below source, unless the question names tests, specs, mocks or fixtures -- ask about tests to get them back.
 - `llmdex query` with no `-t`/`-a`/`-d` errors if the current directory is not indexed. That is a signal to pick a tag, not to index.
 - User says "everywhere" / "across all projects" -- use `-a`.
 - Prefer `-t <tag>` over `-a` -- more relevant, faster, less noisy.
@@ -636,6 +646,13 @@ def main():
         "-D",
         "--description",
         help="Human-readable description of what's in this index (shown in `llmdex catalog`)",
+    )
+    p_index.add_argument(
+        "-x",
+        "--exclude",
+        action="append",
+        metavar="PATTERN",
+        help="Leave out paths matching this glob (repeatable, e.g. -x 'mcp/data' -x '*.min.js'). Stored, so later reindexes keep it.",
     )
     p_index.add_argument(
         "--split",

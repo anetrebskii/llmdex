@@ -39,6 +39,7 @@ def register(
     children: list[str] | None = None,
     split: bool | None = None,
     description: str | None = None,
+    exclude: list[str] | None = None,
 ):
     """Add or update a folder in the registry."""
     data = _load()
@@ -58,6 +59,10 @@ def register(
         entry["split"] = existing["split"]
     if "skip" in existing:
         entry["skip"] = existing["skip"]
+    if exclude:
+        entry["exclude"] = exclude
+    elif "exclude" in existing:
+        entry["exclude"] = existing["exclude"]
     if description is not None:
         entry["description"] = description
     elif "description" in existing:

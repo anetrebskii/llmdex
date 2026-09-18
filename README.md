@@ -72,6 +72,9 @@ llmdex index /path/to/project
 # Assign tags while indexing (repeatable)
 llmdex index /path/to/project -t project:foo -t type:code
 
+# Leave paths out (repeatable). Stored with the index, so reindex keeps them.
+llmdex index /path/to/project -x mcp/data -x '*.min.js'
+
 # Split mode: also index each immediate subfolder as a separate child
 # index, tagged folder:<name>. Lets you narrow queries to one subfolder.
 llmdex index /path/to/project --split
@@ -172,7 +175,9 @@ llmdex automatically picks up every file type it knows how to parse — no `--ex
 
 **What gets skipped:**
 - `node_modules`, `.git`, `dist`, `build`, `.next`, `.venv`, `__pycache__`, and other common build/cache directories.
-- Files ignored by `.gitignore` (when the project is a git repo).
+- Virtual environments, whatever they are called: any folder holding a `pyvenv.cfg`.
+- Files ignored by `.gitignore`, including the `.gitignore` of a folder that is not a git repository at all.
+- Paths matching `-x/--exclude`. A pattern with a slash is matched against the path from the index root (`mcp/data`, `docs/*/draft`), a pattern without one against any file or folder of that name at any depth (`fixtures`, `*.min.js`). The patterns are stored with the index; `llmdex reindex` keeps them, and a new `-x` replaces the list.
 
 ### `llmdex query` — Search the index
 
@@ -196,18 +201,28 @@ llmdex query -f src/api "error handling"
 llmdex query -c "auth flow"
 ```
 
+**Writing a query:**
+
+- **Ask code in English**, whatever language you think in. Identifiers, comments and paths are English, and a question in another language drifts off them: "где создаётся сессия" comes back with the DbContext and test files, "where is the session created" puts the handler first. Notes are different: ask them in the language they are written in.
+- Ask what the code does rather than for the file you expect: "where is the refresh token validated", not "AuthService".
+- Test files are ranked below source, unless the question names tests, specs, mocks or fixtures. `-f src` narrows harder when you want nothing else.
+
 **Output:**
 
 ```
 Query: database connection setup
 Top 5 results:
 
-1. [0.742] /Users/you/my-project/src/db/connection.ts
-   export async function connectDatabase(config: DbConfig) { const pool = new Pool({...
+1. /Users/you/my-project/src/db/connection.ts:14-31
+   14	export async function connectDatabase(config: DbConfig) {
+   15	  const pool = new Pool({...
 
-2. [0.698] /Users/you/my-project/docs/setup.md
-   ## Database Configuration  Set the following environment variables...
+2. /Users/you/my-project/docs/setup.md:3-9
+   3	## Database Configuration
+   4	Set the following environment variables...
 ```
+
+Results are printed best first and carry no score. The fused rank the search sorts by has no meaning outside one result list, and the embedding model gives no absolute measure of relevance -- a nonsense query scores as high as a good one. The `/query` HTTP response still carries `score` for anything that wants the raw number.
 
 Each result shows a relevance score (0-1), the full file path, and a text preview.
 
@@ -350,7 +365,7 @@ curl http://127.0.0.1:7392/health
 
 1. **Indexing** — Files are parsed into chunks using smart parsers (Markdown by headings, source code by structure via tree-sitter, config/text by boundaries). Each chunk is embedded into a vector using a small local model ([multilingual-e5-small](https://huggingface.co/intfloat/multilingual-e5-small) by default — see [Advanced: changing the embedding model](#advanced-changing-the-embedding-model)). Vectors are stored in `~/.llmdex/indexes/`.
 
-2. **Querying** — Your search query is embedded with the same model, then compared against all stored vectors to find the most semantically similar chunks. This means "how does login work" will find code about authentication even if the word "login" doesn't appear.
+2. **Querying** — Your search query is embedded with the same model and compared against all stored vectors, and at the same time matched as keywords with BM25; the two rankings are fused (Reciprocal Rank Fusion). This means "how does login work" finds code about authentication even if the word "login" doesn't appear, and a query naming an identifier still finds that identifier.
 
 3. **Server** — A lightweight HTTP server keeps the embedding model and indexes in memory between queries. It auto-starts on first query and auto-stops after 30 minutes of inactivity. You can also stop it manually with `llmdex server --stop`.
 

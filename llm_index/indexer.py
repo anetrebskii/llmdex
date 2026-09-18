@@ -7,8 +7,10 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 import time
 from bisect import bisect_left, bisect_right
+from fnmatch import fnmatch
 from pathlib import Path
 
 import numpy as np
@@ -109,17 +111,32 @@ DEFAULT_EXTENSIONS = tuple(PARSER_MAP)
 
 
 def _git_ignored_files(root: Path, files: list[str]) -> set[str]:
-    """Return subset of files that are git-ignored by the repository holding root. Uses git check-ignore."""
-    top = next((p for p in (root, *root.parents) if (p / ".git").exists()), None)
-    if top is None:
+    """Return subset of files that git would ignore. Uses git check-ignore, against the repository holding
+    root, or against an empty scratch repository when there is none -- a folder that is not a checkout has
+    its .gitignore read all the same."""
+    if not files:
         return set()
+    top = next((p for p in (root, *root.parents) if (p / ".git").exists()), None)
+    scratch = None
+    prefix = ["git"]
+    if top is None:
+        # The work tree starts at the highest folder in an unbroken chain of .gitignore files above root,
+        # so indexing one subfolder of a folder tree still obeys the .gitignore at its top.
+        base = root
+        while base.parent != base and (base.parent / ".gitignore").exists():
+            base = base.parent
+        scratch = tempfile.mkdtemp()
+        if subprocess.run(["git", "init", "--bare", "-q", scratch], capture_output=True).returncode != 0:
+            shutil.rmtree(scratch, ignore_errors=True)
+            return set()
+        prefix = ["git", f"--git-dir={scratch}", f"--work-tree={base}"]
     try:
         result = subprocess.run(
-            ["git", "check-ignore", "--stdin", "-z"],
+            prefix + ["check-ignore", "--stdin", "-z"],
             input="\0".join(files),
             capture_output=True,
             text=True,
-            cwd=top,
+            cwd=top or root,
             timeout=30,
         )
         if result.returncode not in (0, 1):  # 1 = none ignored
@@ -127,12 +144,28 @@ def _git_ignored_files(root: Path, files: list[str]) -> set[str]:
         return set(result.stdout.strip("\0").split("\0")) if result.stdout else set()
     except (subprocess.TimeoutExpired, FileNotFoundError):
         return set()
+    finally:
+        if scratch:
+            shutil.rmtree(scratch, ignore_errors=True)
+
+
+def _excluded(rel_path: str, patterns: tuple[str, ...]) -> bool:
+    """Match --exclude patterns as .gitignore does its simple cases: a pattern holding a slash against the
+    path from the index root, a pattern without one against any single name along it."""
+    for pat in patterns:
+        pat = pat.rstrip("/")
+        if "/" in pat:
+            if fnmatch(rel_path, pat) or fnmatch(rel_path, pat + "/*"):
+                return True
+        elif any(fnmatch(name, pat) for name in rel_path.split("/")):
+            return True
+    return False
 
 
 def collect_files(
-    root: Path, extensions: tuple[str, ...], root_only: bool = False
+    root: Path, extensions: tuple[str, ...], root_only: bool = False, exclude: tuple[str, ...] = ()
 ) -> tuple[list[str], int]:
-    """Collect files matching extensions, skipping ignored directories and gitignored files.
+    """Collect files matching extensions, skipping ignored directories, excluded paths and gitignored files.
     If root_only, only files directly under root (no subdirectories).
     Returns (files, gitignored_count)."""
     files = []
@@ -140,15 +173,23 @@ def collect_files(
         try:
             for name in os.listdir(root):
                 fp = os.path.join(root, name)
-                if os.path.isfile(fp) and name.endswith(extensions):
+                if os.path.isfile(fp) and name.endswith(extensions) and not _excluded(name, exclude):
                     files.append(fp)
         except OSError:
             pass
     else:
         for dirpath, dirnames, filenames in os.walk(root):
-            dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
+            if "pyvenv.cfg" in filenames:  # a virtual environment, whatever it is called
+                dirnames[:] = []
+                continue
+            rel_dir = os.path.relpath(dirpath, root).replace(os.sep, "/")
+            rel_dir = "" if rel_dir == "." else rel_dir + "/"
+            dirnames[:] = [
+                d for d in dirnames
+                if d not in SKIP_DIRS and not _excluded(rel_dir + d, exclude)
+            ]
             for f in filenames:
-                if f.endswith(extensions):
+                if f.endswith(extensions) and not _excluded(rel_dir + f, exclude):
                     files.append(os.path.join(dirpath, f))
 
     ignored = _git_ignored_files(root, files)
@@ -369,18 +410,22 @@ def build_index(
     force: bool = False,
     split: bool = False,
     parent_tags: list[str] | None = None,
+    exclude: list[str] | None = None,
 ) -> dict:
     """Build vector index for a workspace. Returns stats dict.
 
     If split=True, also indexes each immediate subfolder as a separate child index
-    tagged with folder:<name>. parent_tags is inherited by children."""
+    tagged with folder:<name>. parent_tags is inherited by children.
+    exclude is a list of patterns to leave out; None keeps the ones from the last index."""
+    if exclude is None:
+        exclude = (get_entry(str(workspace)) or {}).get("exclude", [])
     if split:
         return _build_index_split(
-            workspace, embed_model, log, verbose, force, parent_tags
+            workspace, embed_model, log, verbose, force, parent_tags, exclude
         )
 
     return _build_index_single(
-        workspace, embed_model, log, verbose, force, root_only=False
+        workspace, embed_model, log, verbose, force, root_only=False, exclude=exclude
     )
 
 
@@ -391,6 +436,7 @@ def _build_index_split(
     verbose: bool,
     force: bool,
     parent_tags: list[str] | None,
+    exclude: list[str],
 ) -> dict:
     from llm_index.registry import register, set_tags, get_entry, drop_indexes
 
@@ -399,7 +445,7 @@ def _build_index_split(
 
     log(f"=== Root (root-level files only): {workspace} ===")
     root_result = _build_index_single(
-        workspace, embed_model, log, verbose, force, root_only=True
+        workspace, embed_model, log, verbose, force, root_only=True, exclude=exclude
     )
     if root_result.get("error"):
         shutil.rmtree(storage_dir(workspace), ignore_errors=True)
@@ -410,7 +456,13 @@ def _build_index_split(
     try:
         for name in sorted(os.listdir(workspace)):
             sub = workspace / name
-            if sub.is_dir() and name not in SKIP_DIRS and not name.startswith(".") and name not in skip:
+            if (
+                sub.is_dir()
+                and name not in SKIP_DIRS
+                and not name.startswith(".")
+                and name not in skip
+                and not _excluded(name, tuple(exclude))
+            ):
                 subfolders.append(sub)
     except OSError:
         pass
@@ -422,7 +474,7 @@ def _build_index_split(
             log(f"  note: {sub} was already indexed independently -- overwriting")
 
         result = _build_index_single(
-            sub, embed_model, log, verbose, force, root_only=False
+            sub, embed_model, log, verbose, force, root_only=False, exclude=exclude
         )
         if result.get("error") or result.get("files", 0) == 0:
             log("  skipped (no matching files)")
@@ -438,7 +490,7 @@ def _build_index_split(
         drop_indexes(stale)
 
     # Update parent registry entry with children list and split flag
-    register(str(workspace), children=children, split=True)
+    register(str(workspace), children=children, split=True, exclude=exclude)
     if parent_tags:
         set_tags(str(workspace), parent_tags)
 
@@ -452,11 +504,14 @@ def _build_index_single(
     verbose: bool,
     force: bool,
     root_only: bool,
+    exclude: list[str] | None = None,
 ) -> dict:
     """Build a single vector index (no splitting). Returns stats dict."""
     start = time.time()
 
-    all_files, gitignored = collect_files(workspace, DEFAULT_EXTENSIONS, root_only=root_only)
+    all_files, gitignored = collect_files(
+        workspace, DEFAULT_EXTENSIONS, root_only=root_only, exclude=tuple(exclude or ())
+    )
 
     # Show per-extension counts
     ext_counts: dict[str, int] = {}
@@ -467,6 +522,8 @@ def _build_index_single(
     log(f"Found {len(all_files)} files ({summary})")
     if gitignored:
         log(f"Excluded {gitignored} file(s) via .gitignore")
+    if exclude:
+        log(f"Excluding: {', '.join(exclude)}")
 
     if verbose:
         for f in all_files:
@@ -556,7 +613,7 @@ def _build_index_single(
     # Register this folder
     from llm_index.registry import register
 
-    register(str(workspace))
+    register(str(workspace), exclude=exclude)
 
     return {
         "files": len(all_files),

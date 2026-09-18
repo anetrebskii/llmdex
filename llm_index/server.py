@@ -49,6 +49,21 @@ def _stale(directories) -> list[str]:
     ]
 
 
+# A test file is rarely the answer to "where is X done", and unfiltered it takes the top on its own,
+# so it is ranked down unless the question asks about tests.
+TEST_PATH = re.compile(
+    r"(^|/)(tests?|specs?|__tests__|fixtures?|testdata|e2e)/"  # a test folder
+    r"|(^|/)[^/]*\.Tests?/"                                    # a .NET test project
+    r"|(^|/)test_[^/]+$"                                       # test_foo.py
+    r"|[._-](tests?|spec)\.[^/.]+$",                           # foo.test.ts, foo_test.go, foo-spec.rb
+    re.I,
+)
+WANTS_TESTS = re.compile(r"\b(test|tests|testing|spec|specs|mock|mocks|fixture|fixtures)\b", re.I)
+# Only source files: a docs folder named specs/ holds specifications, not tests.
+TEST_EXT = (".ts", ".tsx", ".js", ".jsx", ".py", ".rs", ".go", ".java", ".cs", ".dart")
+TEST_PENALTY = 0.5
+
+
 def _tokenize_code(text: str) -> list[str]:
     """Tokenize text for BM25, splitting on code boundaries."""
     # Split camelCase and PascalCase
@@ -280,6 +295,12 @@ class QueryHandler(BaseHTTPRequestHandler):
         for rows in (vector_rows, bm25_rows):
             for rank, row in enumerate(rows):
                 fused_scores[int(row)] = fused_scores.get(int(row), 0) + 1.0 / (RRF_K + rank + 1)
+
+        if not WANTS_TESTS.search(question):
+            for row in fused_scores:
+                source = chunks["files"][row]
+                if source.endswith(TEST_EXT) and TEST_PATH.search(source):
+                    fused_scores[row] *= TEST_PENALTY
 
         ranked = sorted(fused_scores.items(), key=lambda x: x[1], reverse=True)
 
