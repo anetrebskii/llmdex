@@ -36,3 +36,5 @@ jobs:
           llmdex-server --help
       - name: Verify imports
         run: python -c "from llm_index import indexer, query, server, registry"
+      - name: Test server shutdown
+        run: python -m unittest discover -s tests -v

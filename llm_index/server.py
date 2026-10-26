@@ -525,8 +525,6 @@ def start_server(port: int = DEFAULT_PORT, timeout: int = INACTIVITY_TIMEOUT):
     pf.write_text(f"{os.getpid()}\n{port}\n{get_version()}", encoding="utf-8")
 
     def cleanup(*_):
-        pf.unlink(missing_ok=True)
-        server.shutdown()
         sys.exit(0)
 
     signal.signal(signal.SIGTERM, cleanup)
@@ -541,7 +539,11 @@ def start_server(port: int = DEFAULT_PORT, timeout: int = INACTIVITY_TIMEOUT):
     ver = get_version()
     print(f"llmdex server v{ver} running on http://127.0.0.1:{port}")
     print(f"Auto-shutdown after {timeout}s of inactivity")
-    server.serve_forever()
+    try:
+        server.serve_forever()
+    finally:
+        server.server_close()
+        pf.unlink(missing_ok=True)
 
 
 def server_command(*args: str) -> list[str]:
