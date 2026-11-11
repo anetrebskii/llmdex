@@ -36,7 +36,7 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 def _describe(url: str) -> tuple[int, str] | None:
-    """Size and sha256 of a file, or None when the repository has no such file. Hugging Face sends both for a large file before redirecting to its CDN, and a small one is sized after the redirect."""
+    """Size and etag (sha256, or git's blob sha1 for a small file) of a file, or None when the repository has no such file. Hugging Face sends both for a large file before redirecting to its CDN, and a small one is sized after the redirect."""
     try:
         headers = urllib.request.build_opener(_NoRedirect).open(urllib.request.Request(url, method="HEAD"), timeout=30).headers
     except urllib.error.HTTPError as e:
@@ -51,8 +51,12 @@ def _describe(url: str) -> tuple[int, str] | None:
         return int(response.headers["content-length"]), ""
 
 
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
+def _digest(path: Path, etag: str) -> str:
+    """The file's hash in the form of Hugging Face's etag: sha256 for an LFS file, git's blob sha1 for a small one."""
+    if len(etag) == 40:
+        digest = hashlib.sha1(b"blob %d\0" % path.stat().st_size)
+    else:
+        digest = hashlib.sha256()
     with open(path, "rb") as f:
         while block := f.read(1 << 20):
             digest.update(block)
@@ -106,7 +110,7 @@ def download_model(log=print) -> Path:
                             report(finished + have)
                 if have < size:
                     raise ConnectionError(f"Connection closed after {have // 1_000_000} MB of {size // 1_000_000} MB of {name}")
-            if not sha or _sha256(part) == sha:
+            if not sha or _digest(part, sha) == sha:
                 break
             part.unlink()
         else:
