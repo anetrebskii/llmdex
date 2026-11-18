@@ -226,7 +226,7 @@ Results come best first and carry no number, in the output and in the `/query` J
 
 Each result is the file path, the line range and the chunk itself.
 
-Across several indexes -- `-a`, or `-t` matching more than one -- the merge sorts on similarity, which is the only quantity comparable between them. Within one index the two retrievers are fused by rank (RRF), which is what brings exact keyword hits up next to semantic ones.
+Two retrievers find the chunks -- embeddings by meaning, BM25 by the words themselves -- and their lists are fused by rank (RRF), which is what brings exact keyword hits up next to semantic ones. Across several indexes -- `-a`, or `-t` matching more than one -- they are searched as one collection: one vector list by similarity, which the shared model makes comparable everywhere, and one BM25 list scored against the chunk count, lengths and word frequencies of all those indexes together, so a method named in the question ranks the same whichever repository holds it.
 
 You can also filter queries by tag (see below):
 
