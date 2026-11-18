@@ -64,13 +64,6 @@ TEST_EXT = (".ts", ".tsx", ".js", ".jsx", ".py", ".rs", ".go", ".java", ".cs", "
 TEST_PENALTY = 0.5
 
 
-def _public(items: list[dict]) -> list[dict]:
-    """Drop the key the merge sorts on: the number means nothing once the list is ordered."""
-    for item in items:
-        item.pop("similarity", None)
-    return items
-
-
 def _tokenize_code(text: str) -> list[str]:
     """Tokenize text for BM25, splitting on code boundaries."""
     # Split camelCase and PascalCase
@@ -80,7 +73,10 @@ def _tokenize_code(text: str) -> list[str]:
 
 
 class BM25:
-    """BM25Okapi as in rank_bm25, same scores, over postings in numpy arrays instead of a dict per chunk (~4x less RAM)."""
+    """BM25Okapi as in rank_bm25, same scores, over postings in numpy arrays instead of a dict per chunk (~4x less RAM).
+
+    get_scores can take the corpus statistics of several indexes (CorpusStats), so their scores
+    are on one scale; without them it scores against this index alone."""
 
     def __init__(self, texts: list[str], k1=1.5, b=0.75, epsilon=0.25):
         vocab, terms, counts, doc_starts = {}, array("i"), array("i"), [0]
@@ -96,21 +92,75 @@ class BM25:
         order = np.argsort(terms, kind="stable")
         self.docs = np.repeat(np.arange(len(texts), dtype=np.int32), np.diff(doc_starts))[order]
         self.tf = np.frombuffer(counts, dtype=np.int32).astype(np.float32)[order]
-        df = np.bincount(terms, minlength=len(vocab))
-        self.ptr = np.concatenate(([0], np.cumsum(df)))
-        idf = np.log(len(texts) - df + 0.5) - np.log(df + 0.5)
-        idf[idf < 0] = epsilon * idf.mean()
-        self.idf, self.vocab, self.k1 = idf, vocab, k1
-        self.norm = k1 * (1 - b + b * doc_len / doc_len.mean())
+        self.df = np.bincount(terms, minlength=len(vocab))
+        self.ptr = np.concatenate(([0], np.cumsum(self.df)))
+        self.vocab, self.k1, self.b, self.epsilon = vocab, k1, b, epsilon
+        self.doc_len = doc_len
+        self.raw_idf_mean = float(CorpusStats.raw_idf(len(texts), self.df).mean()) if len(vocab) else 0.0
+        self.stats = CorpusStats.of([self], terms=[])
+        self.idf = self.stats.idf(self.df)
+        self.norm = self._norm(self.stats)
 
-    def get_scores(self, query: list[str]) -> np.ndarray:
-        scores = np.zeros(len(self.norm))
+    def _norm(self, stats: "CorpusStats") -> np.ndarray:
+        return self.k1 * (1 - self.b + self.b * self.doc_len / stats.avgdl)
+
+    def get_scores(self, query: list[str], stats: "CorpusStats | None" = None) -> np.ndarray:
+        stats = stats or self.stats
+        norm = self.norm if stats is self.stats else self._norm(stats)
+        scores = np.zeros(len(self.doc_len))
         for q in query:
             t = self.vocab.get(q)
             if t is not None:
+                idf = self.idf[t] if stats is self.stats else stats.term_idf(q)
                 docs, tf = self.docs[self.ptr[t]:self.ptr[t + 1]], self.tf[self.ptr[t]:self.ptr[t + 1]]
-                scores[docs] += self.idf[t] * tf * (self.k1 + 1) / (tf + self.norm[docs])
+                scores[docs] += idf * tf * (self.k1 + 1) / (tf + norm[docs])
         return scores
+
+
+class CorpusStats:
+    """What BM25 needs from the whole collection -- chunk count, average length, document frequency --
+    summed over several indexes, so one query scores every index against the same numbers.
+
+    Scored alone, an index rates a word by how rare it is there: a repository full of RegisterHook
+    gives it a low weight, one that mentions it once a high one, and the two scores cannot be put in
+    one list. Summing the statistics first is what a search engine does across the shards of one
+    index (Elasticsearch's dfs_query_then_fetch); over one index it gives that index's own numbers."""
+
+    def __init__(self, n: int, total_len: float, df: Counter, idf_mean: float, epsilon: float):
+        self.n, self.df, self.epsilon = n, df, epsilon
+        self.avgdl = total_len / n if n else 1.0
+        self.idf_mean = idf_mean
+
+    @classmethod
+    def of(cls, indexes: list["BM25"], terms: list[str] | None = None) -> "CorpusStats":
+        n = sum(len(i.doc_len) for i in indexes)
+        total_len = float(sum(i.doc_len.sum() for i in indexes))
+        df: Counter = Counter()
+        for index in indexes:
+            for t in (terms if terms is not None else index.vocab):
+                k = index.vocab.get(t)
+                if k is not None:
+                    df[t] += int(index.df[k])
+        # rank_bm25 floors a negative idf (a word in over half the chunks) at epsilon times the mean idf of
+        # the vocabulary. The mean of the joined vocabulary is not at hand without reading all of it,
+        # so it is the mean of each index's own, weighted by vocabulary size: exact for one index.
+        sized = [i for i in indexes if len(i.vocab)]
+        vocab = sum(len(i.vocab) for i in sized)
+        idf_mean = sum(len(i.vocab) * i.raw_idf_mean for i in sized) / vocab if vocab else 0.0
+        epsilon = indexes[0].epsilon if indexes else 0.25
+        return cls(n, total_len, df, idf_mean, epsilon)
+
+    @staticmethod
+    def raw_idf(n: int, df):
+        return np.log(n - df + 0.5) - np.log(df + 0.5)
+
+    def idf(self, df: np.ndarray) -> np.ndarray:
+        idf = self.raw_idf(self.n, df)
+        idf[idf < 0] = self.epsilon * self.idf_mean
+        return idf
+
+    def term_idf(self, term: str) -> float:
+        return float(self.idf(np.array([self.df.get(term, 0)], dtype=np.float64))[0])
 
 
 class IndexCache:
@@ -272,55 +322,77 @@ class QueryHandler(BaseHTTPRequestHandler):
         self, workspace: Path, question: str, top_k: int, folder: str | None = None
     ) -> list[dict]:
         """Query a single workspace index, return list of result dicts."""
-        try:
-            chunks, vectors = cache.get_index(workspace)
-        except (FileNotFoundError, ValueError):
-            return []
-        if not len(vectors):
+        return self._search([workspace], question, top_k, folder)
+
+    def _search(
+        self, workspaces: list[Path], question: str, top_k: int, folder: str | None = None
+    ) -> list[dict]:
+        """Search one or several indexes as one collection, return list of result dicts.
+
+        Each retriever makes one list over all the indexes -- vectors by cosine similarity, which one
+        model makes comparable everywhere, and BM25 against the statistics of all the indexes together --
+        and the two lists are fused by rank. Fusing inside each index first and merging afterwards would
+        lose one of them: fused ranks tie at the top of every index, and a merge on similarity alone
+        drops the exact keyword hits BM25 found. For one index this is the search it always was."""
+        loaded = []  # (chunks, vectors, bm25 or None)
+        for workspace in workspaces:
+            try:
+                chunks, vectors = cache.get_index(workspace)
+            except (FileNotFoundError, ValueError):
+                continue
+            if not len(vectors):
+                continue
+            try:
+                bm25 = cache.get_bm25(workspace)
+            except Exception:
+                bm25 = None  # this index takes part through its vectors only
+            loaded.append((chunks, vectors, bm25))
+        if not loaded:
             return []
 
-        fetch_k = min(top_k * 3 * (2 if folder else 1), len(vectors))
-
-        # Vector retrieval: embeddings are normalized, so the dot product is the cosine similarity
+        fetch_k = top_k * 3 * (2 if folder else 1)
         query_vector = cache.get_embed_model().embed_query(question)
-        similarity = vectors @ query_vector
-        top = np.argpartition(-similarity, fetch_k - 1)[:fetch_k]
-        vector_rows = top[np.argsort(-similarity[top])]
+        terms = _tokenize_code(question)
+        stats = CorpusStats.of([b for _, _, b in loaded if b is not None], terms)
 
-        # BM25 retrieval
-        bm25_rows = []
-        try:
-            scores = cache.get_bm25(workspace).get_scores(_tokenize_code(question))
-            top = np.argpartition(-scores, fetch_k - 1)[:fetch_k]
-            bm25_rows = [i for i in top[np.argsort(-scores[top])] if scores[i] > 0]
-        except Exception:
-            pass  # fall back to vector-only
+        # Each index contributes its own head of either list; the heads are then merged on a score
+        # that means the same in every index, and only the global head of each list is fused.
+        vector_hits, bm25_hits = [], []  # (score, index, row)
+        for i, (chunks, vectors, bm25) in enumerate(loaded):
+            k = min(fetch_k, len(vectors))
+            # Embeddings are normalized, so the dot product is the cosine similarity
+            similarity = vectors @ query_vector
+            top = np.argpartition(-similarity, k - 1)[:k]
+            vector_hits += [(float(similarity[r]), i, int(r)) for r in top]
+            if bm25 is not None:
+                scores = bm25.get_scores(terms, stats if len(loaded) > 1 else None)
+                top = np.argpartition(-scores, k - 1)[:k]
+                bm25_hits += [(float(scores[r]), i, int(r)) for r in top if scores[r] > 0]
 
         # Reciprocal Rank Fusion
         RRF_K = 60
-        fused_scores: dict[int, float] = {}
-        for rows in (vector_rows, bm25_rows):
-            for rank, row in enumerate(rows):
-                fused_scores[int(row)] = fused_scores.get(int(row), 0) + 1.0 / (RRF_K + rank + 1)
+        fused_scores: dict[tuple[int, int], float] = {}
+        for hits in (vector_hits, bm25_hits):
+            hits.sort(key=lambda h: h[0], reverse=True)
+            for rank, (_, i, row) in enumerate(hits[:fetch_k]):
+                fused_scores[i, row] = fused_scores.get((i, row), 0) + 1.0 / (RRF_K + rank + 1)
 
         if not WANTS_TESTS.search(question):
-            for row in fused_scores:
-                source = chunks["files"][row]
+            for i, row in fused_scores:
+                source = loaded[i][0]["files"][row]
                 if source.endswith(TEST_EXT) and TEST_PATH.search(source):
-                    fused_scores[row] *= TEST_PENALTY
+                    fused_scores[i, row] *= TEST_PENALTY
 
         ranked = sorted(fused_scores.items(), key=lambda x: x[1], reverse=True)
 
         items = []
-        for row, score in ranked:
+        for (i, row), score in ranked:
+            chunks = loaded[i][0]
             source = chunks["files"][row]
             if folder and not source.startswith(folder):
                 continue
 
             item = {
-                # The list is already in fused-rank order; the similarity is what a merge across indexes
-                # can sort on, since fused ranks tie at the top of every index. Dropped before it goes out.
-                "similarity": float(similarity[row]),
                 "source": source,
                 "text": chunks["texts"][row],
             }
@@ -362,12 +434,8 @@ class QueryHandler(BaseHTTPRequestHandler):
                 )
                 return
 
-            all_items = []
-            for dir_path in entries:
-                all_items.extend(self._query_single(Path(dir_path), question, top_k, folder))
-
-            all_items.sort(key=lambda x: x["similarity"], reverse=True)
-            self._json_response(200, {"results": _public(all_items[:top_k]), "stale": _stale(entries)})
+            results = self._search([Path(d) for d in entries], question, top_k, folder)
+            self._json_response(200, {"results": results, "stale": _stale(entries)})
         elif search_all:
             # Search across all registered indexes
             from llm_index.registry import list_registered
@@ -379,13 +447,8 @@ class QueryHandler(BaseHTTPRequestHandler):
                 )
                 return
 
-            all_items = []
-            for dir_path in entries:
-                all_items.extend(self._query_single(Path(dir_path), question, top_k, folder))
-
-            # Only the similarity is comparable between indexes; the fused rank ties at the top of each.
-            all_items.sort(key=lambda x: x["similarity"], reverse=True)
-            self._json_response(200, {"results": _public(all_items[:top_k]), "stale": _stale(entries)})
+            results = self._search([Path(d) for d in entries], question, top_k, folder)
+            self._json_response(200, {"results": results, "stale": _stale(entries)})
         else:
             workspace = Path(directory).resolve()
             items = self._query_single(workspace, question, top_k, folder)
@@ -407,7 +470,7 @@ class QueryHandler(BaseHTTPRequestHandler):
                         },
                     )
                     return
-            self._json_response(200, {"results": _public(items)})
+            self._json_response(200, {"results": items})
 
     def _handle_invalidate(self):
         body = self._read_body()
